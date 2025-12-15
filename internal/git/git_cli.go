@@ -507,6 +507,7 @@ func (g *GitCli) parseTagBlock(lines []string) Tag {
 	// For lightweight tags (objecttype=commit): objectSHA IS the commit
 	// For annotated tags (objecttype=tag): derefSHA is the dereferenced commit SHA
 	var actualCommitSHA string
+	var actualMessage string
 	if objectType == "commit" {
 		// Lightweight tag - objectSHA IS the commit
 		actualCommitSHA = objectSHA
@@ -515,13 +516,16 @@ func (g *GitCli) parseTagBlock(lines []string) Tag {
 		if commitSubject == "" {
 			commitSubject = message
 		}
+		// Don't set message for lightweight tags - they don't have tag messages
+		actualMessage = ""
 	} else {
 		// Annotated tag - use dereferenced commit SHA
 		actualCommitSHA = derefSHA
+		actualMessage = message
 	}
 
 	commit := NewCommit(actualCommitSHA, commitSubject, committedOn, committedBy)
-	return NewTag(name, commit, message, taggerName, taggerEmail, taggedOn)
+	return NewTag(name, commit, actualMessage, taggerName, taggerEmail, taggedOn)
 }
 
 func (g *GitCli) BranchExists(branchName string, caseInsensitive bool) (bool, error) {
