@@ -1,0 +1,30 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - errorlint
+    - gocyclo
+    - misspell
+    - nilerr
+    - revive
+    - unconvert
+  settings:
+    gocyclo:
+      min-complexity: 15
+    revive:
+      rules:
+        - name: package-comments
+          disabled: true
+
+formatters:
+  enable:
+    - goimports
+
+issues:
+  max-same-issues: 10
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - funlen
+        - gocyclo
