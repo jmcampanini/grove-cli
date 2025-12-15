@@ -13,8 +13,8 @@ import (
 
 // GitCli provides high-level git operations by executing real git commands via the git CLI.
 type GitCli struct {
-	log        *clog.Logger
 	dryRun     bool
+	log        *clog.Logger
 	workingDir string
 }
 
@@ -23,8 +23,8 @@ var _ Git = &GitCli{}
 // New creates a new GitCli instance that executes git commands in the specified working directory.
 func New(dryRun bool, workingDir string) Git {
 	return &GitCli{
-		log:        clog.Default().WithPrefix("git"),
 		dryRun:     dryRun,
+		log:        clog.Default().WithPrefix("git"),
 		workingDir: workingDir,
 	}
 }
@@ -167,17 +167,17 @@ worktreepath %(worktreepath)
 		return []LocalBranch{}, nil
 	}
 
-	return g.parseBranchesFromFormat(output), nil
+	return parseBranchesFromFormat(output), nil
 }
 
 // parseBranchesFromFormat parses the output of `git for-each-ref` with a custom format
 // and returns a slice of LocalBranch structs with all metadata.
-func (g *GitCli) parseBranchesFromFormat(output string) []LocalBranch {
+func parseBranchesFromFormat(output string) []LocalBranch {
 	blocks := splitIntoBlocks(output)
 	branches := make([]LocalBranch, 0, len(blocks))
 
 	for _, block := range blocks {
-		branch := g.parseBranchBlock(block)
+		branch := parseBranchBlock(block)
 		if branch.Name != "" {
 			branches = append(branches, branch)
 		}
@@ -213,7 +213,7 @@ func splitIntoBlocks(output string) [][]string {
 	return blocks
 }
 
-func (g *GitCli) parseBranchBlock(lines []string) LocalBranch {
+func parseBranchBlock(lines []string) LocalBranch {
 	var (
 		ahead                int
 		behind               int
@@ -239,14 +239,10 @@ func (g *GitCli) parseBranchBlock(lines []string) LocalBranch {
 			upstreamName = strings.TrimPrefix(line, "upstream ")
 		case strings.HasPrefix(line, "track "):
 			track := strings.TrimPrefix(line, "track ")
-			ahead, behind = g.parseTrackInfo(track)
+			ahead, behind = parseTrackInfo(track)
 		case strings.HasPrefix(line, "committedOn "):
 			dateStr := strings.TrimPrefix(line, "committedOn ")
-			if parsed, err := time.Parse(time.RFC3339, dateStr); err == nil {
-				committedOn = parsed
-			} else {
-				g.log.Debug("failed to parse commit date", "date", dateStr, "error", err)
-			}
+			committedOn = parseISO8601Date(dateStr)
 		case strings.HasPrefix(line, "committedBy "):
 			committedBy = strings.TrimPrefix(line, "committedBy ")
 		case strings.HasPrefix(line, "subject "):
@@ -261,7 +257,7 @@ func (g *GitCli) parseBranchBlock(lines []string) LocalBranch {
 }
 
 // parseTrackInfo parses the upstream track info string like "[ahead 3, behind 2]"
-func (g *GitCli) parseTrackInfo(track string) (ahead, behind int) {
+func parseTrackInfo(track string) (ahead, behind int) {
 	if track == "" || track == "[gone]" {
 		return 0, 0
 	}
@@ -274,8 +270,6 @@ func (g *GitCli) parseTrackInfo(track string) (ahead, behind int) {
 	if n, _ := fmt.Sscanf(track, "[behind %d]", &behind); n == 1 {
 		return 0, behind
 	}
-
-	g.log.Debug("could not determine track info")
 	return 0, 0
 }
 
@@ -323,15 +317,15 @@ subject %(contents:subject)
 		return []RemoteBranch{}, nil
 	}
 
-	return g.parseRemoteBranchesFromFormat(output), nil
+	return parseRemoteBranchesFromFormat(output), nil
 }
 
-func (g *GitCli) parseRemoteBranchesFromFormat(output string) []RemoteBranch {
+func parseRemoteBranchesFromFormat(output string) []RemoteBranch {
 	blocks := splitIntoBlocks(output)
 	branches := make([]RemoteBranch, 0, len(blocks))
 
 	for _, block := range blocks {
-		branch := g.parseRemoteBranchBlock(block)
+		branch := parseRemoteBranchBlock(block)
 		if branch.Name != "" {
 			branches = append(branches, branch)
 		}
@@ -340,7 +334,7 @@ func (g *GitCli) parseRemoteBranchesFromFormat(output string) []RemoteBranch {
 	return branches
 }
 
-func (g *GitCli) parseRemoteBranchBlock(lines []string) RemoteBranch {
+func parseRemoteBranchBlock(lines []string) RemoteBranch {
 	var (
 		committedBy string
 		committedOn time.Time
@@ -363,11 +357,7 @@ func (g *GitCli) parseRemoteBranchBlock(lines []string) RemoteBranch {
 			sha = strings.TrimPrefix(line, "commit ")
 		case strings.HasPrefix(line, "committedOn "):
 			dateStr := strings.TrimPrefix(line, "committedOn ")
-			if parsed, err := time.Parse(time.RFC3339, dateStr); err == nil {
-				committedOn = parsed
-			} else {
-				g.log.Debug("failed to parse commit date", "date", dateStr, "error", err)
-			}
+			committedOn = parseISO8601Date(dateStr)
 		case strings.HasPrefix(line, "committedBy "):
 			committedBy = strings.TrimPrefix(line, "committedBy ")
 		case strings.HasPrefix(line, "subject "):
@@ -435,24 +425,23 @@ commitsubject %(*subject)
 		return []Tag{}, nil
 	}
 
-	return g.parseTagsFromFormat(output), nil
+	return parseTagsFromFormat(output), nil
 }
 
 // parseISO8601Date attempts to parse an ISO 8601 date string and returns zero time on failure.
-func (g *GitCli) parseISO8601Date(dateStr, errContext string) time.Time {
+func parseISO8601Date(dateStr string) time.Time {
 	if parsed, err := time.Parse(time.RFC3339, dateStr); err == nil {
 		return parsed
 	}
-	g.log.Debug("failed to parse date", "errContext", errContext, "date", dateStr)
 	return time.Time{}
 }
 
-func (g *GitCli) parseTagsFromFormat(output string) []Tag {
+func parseTagsFromFormat(output string) []Tag {
 	blocks := splitIntoBlocks(output)
 	tags := make([]Tag, 0, len(blocks))
 
 	for _, block := range blocks {
-		tag := g.parseTagBlock(block)
+		tag := parseTagBlock(block)
 		if tag.Name != "" {
 			tags = append(tags, tag)
 		}
@@ -461,7 +450,7 @@ func (g *GitCli) parseTagsFromFormat(output string) []Tag {
 	return tags
 }
 
-func (g *GitCli) parseTagBlock(lines []string) Tag {
+func parseTagBlock(lines []string) Tag {
 	var (
 		commitSubject string
 		committedBy   string
@@ -491,13 +480,13 @@ func (g *GitCli) parseTagBlock(lines []string) Tag {
 		case strings.HasPrefix(line, "taggeremail "):
 			taggerEmail = strings.TrimPrefix(line, "taggeremail ")
 		case strings.HasPrefix(line, "taggedon "):
-			taggedOn = g.parseISO8601Date(strings.TrimPrefix(line, "taggedon "), "tag date")
+			taggedOn = parseISO8601Date(strings.TrimPrefix(line, "taggedon "))
 		case strings.HasPrefix(line, "message "):
 			message = strings.TrimPrefix(line, "message ")
 		case strings.HasPrefix(line, "committedby "):
 			committedBy = strings.TrimPrefix(line, "committedby ")
 		case strings.HasPrefix(line, "committedon "):
-			committedOn = g.parseISO8601Date(strings.TrimPrefix(line, "committedon "), "commit date")
+			committedOn = parseISO8601Date(strings.TrimPrefix(line, "committedon "))
 		case strings.HasPrefix(line, "commitsubject "):
 			commitSubject = strings.TrimPrefix(line, "commitsubject ")
 		}
@@ -633,6 +622,7 @@ func (g *GitCli) parseWorktreeBlock(lines []string, branchMap map[string]LocalBr
 		if tag, ok := tagMap[sha]; ok {
 			worktree.Ref = &tag
 		} else {
+			// TODO: figure out a way to get the commit information without needing a reference to g GitCli
 			commit, err := g.getCommitBySHA(sha)
 			if err != nil {
 				return Worktree{}, fmt.Errorf("failed to get commit for detached worktree: %w", err)

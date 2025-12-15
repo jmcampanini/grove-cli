@@ -87,8 +87,6 @@ func TestSplitIntoBlocks(t *testing.T) {
 // =============================================================================
 
 func TestParseTrackInfo(t *testing.T) {
-	g := newTestGitCli()
-
 	tests := []struct {
 		name       string
 		input      string
@@ -153,7 +151,7 @@ func TestParseTrackInfo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ahead, behind := g.parseTrackInfo(tt.input)
+			ahead, behind := parseTrackInfo(tt.input)
 			assert.Equal(t, tt.wantAhead, ahead, "ahead mismatch")
 			assert.Equal(t, tt.wantBehind, behind, "behind mismatch")
 		})
@@ -165,8 +163,6 @@ func TestParseTrackInfo(t *testing.T) {
 // =============================================================================
 
 func TestParseISO8601Date(t *testing.T) {
-	g := newTestGitCli()
-
 	tests := []struct {
 		name    string
 		input   string
@@ -202,7 +198,7 @@ func TestParseISO8601Date(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := g.parseISO8601Date(tt.input, "test context")
+			got := parseISO8601Date(tt.input)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -213,8 +209,6 @@ func TestParseISO8601Date(t *testing.T) {
 // =============================================================================
 
 func TestParseBranchBlock(t *testing.T) {
-	g := newTestGitCli()
-
 	tests := []struct {
 		name  string
 		input []string
@@ -361,7 +355,7 @@ func TestParseBranchBlock(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := g.parseBranchBlock(tt.input)
+			got := parseBranchBlock(tt.input)
 			assert.Equal(t, tt.want.Name, got.Name)
 			assert.Equal(t, tt.want.UpstreamName, got.UpstreamName)
 			assert.Equal(t, tt.want.WorktreeAbsolutePath, got.WorktreeAbsolutePath)
@@ -381,8 +375,6 @@ func TestParseBranchBlock(t *testing.T) {
 // =============================================================================
 
 func TestParseBranchesFromFormat(t *testing.T) {
-	g := newTestGitCli()
-
 	tests := []struct {
 		name       string
 		input      string
@@ -441,7 +433,7 @@ worktreepath
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := g.parseBranchesFromFormat(tt.input)
+			got := parseBranchesFromFormat(tt.input)
 			assert.Len(t, got, tt.wantLength)
 			assert.Equal(t, tt.wantNames, branchNames(got))
 		})
@@ -453,8 +445,6 @@ worktreepath
 // =============================================================================
 
 func TestParseRemoteBranchBlock(t *testing.T) {
-	g := newTestGitCli()
-
 	tests := []struct {
 		name  string
 		input []string
@@ -529,7 +519,7 @@ func TestParseRemoteBranchBlock(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := g.parseRemoteBranchBlock(tt.input)
+			got := parseRemoteBranchBlock(tt.input)
 			assert.Equal(t, tt.want.Name, got.Name)
 			assert.Equal(t, tt.want.RemoteName, got.RemoteName)
 			assert.Equal(t, tt.want.Commit().SHA, got.Commit().SHA)
@@ -544,8 +534,6 @@ func TestParseRemoteBranchBlock(t *testing.T) {
 // =============================================================================
 
 func TestParseRemoteBranchesFromFormat(t *testing.T) {
-	g := newTestGitCli()
-
 	tests := []struct {
 		name       string
 		input      string
@@ -596,7 +584,7 @@ subject Feature
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := g.parseRemoteBranchesFromFormat(tt.input)
+			got := parseRemoteBranchesFromFormat(tt.input)
 			assert.Len(t, got, tt.wantLength)
 			assert.Equal(t, tt.wantNames, remoteBranchNames(got))
 		})
@@ -608,8 +596,6 @@ subject Feature
 // =============================================================================
 
 func TestParseTagBlock(t *testing.T) {
-	g := newTestGitCli()
-
 	tests := []struct {
 		name  string
 		input []string
@@ -696,7 +682,7 @@ func TestParseTagBlock(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := g.parseTagBlock(tt.input)
+			got := parseTagBlock(tt.input)
 			assert.Equal(t, tt.want.Name, got.Name)
 			assert.Equal(t, tt.want.Message, got.Message)
 			assert.Equal(t, tt.want.TaggerName, got.TaggerName)
@@ -714,8 +700,6 @@ func TestParseTagBlock(t *testing.T) {
 // =============================================================================
 
 func TestParseTagsFromFormat(t *testing.T) {
-	g := newTestGitCli()
-
 	tests := []struct {
 		name       string
 		input      string
@@ -790,7 +774,7 @@ commitsubject Beta feature
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := g.parseTagsFromFormat(tt.input)
+			got := parseTagsFromFormat(tt.input)
 			assert.Len(t, got, tt.wantLength)
 			assert.Equal(t, tt.wantNames, tagNames(got))
 		})
