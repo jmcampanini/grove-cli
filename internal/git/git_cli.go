@@ -438,6 +438,15 @@ commitsubject %(*subject)
 	return g.parseTagsFromFormat(output), nil
 }
 
+// parseISO8601Date attempts to parse an ISO 8601 date string and returns zero time on failure.
+func (g *GitCli) parseISO8601Date(dateStr, errContext string) time.Time {
+	if parsed, err := time.Parse(time.RFC3339, dateStr); err == nil {
+		return parsed
+	}
+	g.log.Debug("failed to parse date", "errContext", errContext, "date", dateStr)
+	return time.Time{}
+}
+
 func (g *GitCli) parseTagsFromFormat(output string) []Tag {
 	blocks := splitIntoBlocks(output)
 	tags := make([]Tag, 0, len(blocks))
@@ -482,23 +491,13 @@ func (g *GitCli) parseTagBlock(lines []string) Tag {
 		case strings.HasPrefix(line, "taggeremail "):
 			taggerEmail = strings.TrimPrefix(line, "taggeremail ")
 		case strings.HasPrefix(line, "taggedon "):
-			dateStr := strings.TrimPrefix(line, "taggedon ")
-			if parsed, err := time.Parse(time.RFC3339, dateStr); err == nil {
-				taggedOn = parsed
-			} else {
-				g.log.Debug("failed to parse tag date", "date", dateStr, "error", err)
-			}
+			taggedOn = g.parseISO8601Date(strings.TrimPrefix(line, "taggedon "), "tag date")
 		case strings.HasPrefix(line, "message "):
 			message = strings.TrimPrefix(line, "message ")
 		case strings.HasPrefix(line, "committedby "):
 			committedBy = strings.TrimPrefix(line, "committedby ")
 		case strings.HasPrefix(line, "committedon "):
-			dateStr := strings.TrimPrefix(line, "committedon ")
-			if parsed, err := time.Parse(time.RFC3339, dateStr); err == nil {
-				committedOn = parsed
-			} else {
-				g.log.Debug("failed to parse commit date", "date", dateStr, "error", err)
-			}
+			committedOn = g.parseISO8601Date(strings.TrimPrefix(line, "committedon "), "commit date")
 		case strings.HasPrefix(line, "commitsubject "):
 			commitSubject = strings.TrimPrefix(line, "commitsubject ")
 		}
@@ -525,14 +524,6 @@ func (g *GitCli) parseTagBlock(lines []string) Tag {
 	return NewTag(name, commit, message, taggerName, taggerEmail, taggedOn)
 }
 
-func (g *GitCli) buildTagMap(tags []Tag) (map[string]Tag, error) {
-	tagMap := make(map[string]Tag, len(tags))
-	for _, t := range tags {
-		tagMap[t.Commit().SHA] = t
-	}
-	return tagMap, nil
-}
-
 func (g *GitCli) BranchExists(branchName string, caseInsensitive bool) (bool, error) {
 	branches, err := g.ListLocalBranches()
 	if err != nil {
@@ -541,7 +532,7 @@ func (g *GitCli) BranchExists(branchName string, caseInsensitive bool) (bool, er
 
 	for _, branch := range branches {
 		if caseInsensitive {
-			if strings.ToLower(branch.Name) == strings.ToLower(branchName) {
+			if strings.EqualFold(branch.Name, branchName) {
 				return true, nil
 			}
 		} else {

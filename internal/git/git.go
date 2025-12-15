@@ -87,11 +87,11 @@ func (t Tag) IsAnnotated() bool {
 type LocalBranch struct {
 	Ahead                int // Commits ahead of upstream
 	Behind               int // Commits behind upstream
+	commit               Commit
 	IsCheckedOut         bool
 	Name                 string // Short branch name (e.g., "main", not "refs/heads/main")
 	UpstreamName         string // Short upstream name (e.g., "origin/main"), empty if no upstream
 	WorktreeAbsolutePath string // Absolute path to worktree if checked out, empty otherwise
-	commit               Commit
 }
 
 var _ WorktreeRef = &LocalBranch{}
@@ -114,7 +114,7 @@ func (b LocalBranch) FullTag() (*Tag, bool)            { return nil, false }
 func (b LocalBranch) Commit() Commit                   { return b.commit }
 
 type RemoteBranch struct {
-	commit     Commit // private: SHA, Subject, CommittedOn, CommittedBy
+	commit     Commit
 	Name       string // Short branch name without remote prefix (e.g., "main")
 	RemoteName string // Remote name (e.g., "origin")
 }
