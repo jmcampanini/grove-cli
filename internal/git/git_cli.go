@@ -2,7 +2,9 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -15,16 +17,18 @@ import (
 type GitCli struct {
 	dryRun     bool
 	log        *clog.Logger
+	timeout    time.Duration
 	workingDir string
 }
 
 var _ Git = &GitCli{}
 
 // New creates a new GitCli instance that executes git commands in the specified working directory.
-func New(dryRun bool, workingDir string) Git {
+func New(dryRun bool, workingDir string, timeout time.Duration) Git {
 	return &GitCli{
 		dryRun:     dryRun,
 		log:        clog.Default().WithPrefix("git"),
+		timeout:    timeout,
 		workingDir: workingDir,
 	}
 }
@@ -32,14 +36,22 @@ func New(dryRun bool, workingDir string) Git {
 func (g *GitCli) executeGitCommand(args ...string) (string, error) {
 	g.log.Debug("Executing git command", "cmd", "git", "args", args, "workingDir", g.workingDir)
 
-	cmd := exec.Command("git", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), g.timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = g.workingDir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			g.log.Warn("git command timed out", "args", args, "timeout", g.timeout, "error", err)
+			return "", fmt.Errorf("git %s timed out after %s", strings.Join(args, " "), g.timeout)
+		}
 		g.log.Warn("Git command failed", "args", args, "stderr", stderr.String(), "error", err)
 		return "", fmt.Errorf("git %s failed: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
@@ -126,7 +138,7 @@ func (g *GitCli) GetCommitSubject() (string, error) {
 }
 
 func (g *GitCli) GetDefaultRemote(fallback string) (string, error) {
-	output, err := g.executeGitCommand("config", "get", "remote.pushDefault")
+	output, err := g.executeGitCommand("config", "--get", "remote.pushDefault")
 	if err == nil && output != "" {
 		g.log.Debug("Found remote.pushDefault", "remote", output)
 		return output, nil
@@ -136,11 +148,34 @@ func (g *GitCli) GetDefaultRemote(fallback string) (string, error) {
 	return fallback, nil
 }
 
+// remoteExists checks if a remote with the given name is configured.
+func (g *GitCli) remoteExists(remoteName string) (bool, error) {
+	_, err := g.executeGitCommand("remote", "get-url", remoteName)
+	if err == nil {
+		return true, nil
+	}
+
+	if strings.Contains(err.Error(), "No such remote") {
+		return false, nil
+	}
+
+	return false, err
+}
+
 func (g *GitCli) GetRepoDefaultBranch(remoteName string) (string, error) {
+	if exists, err := g.remoteExists(remoteName); err != nil {
+		return "", fmt.Errorf("failed to check remote existence: %w", err)
+	} else if !exists {
+		return "", fmt.Errorf("remote '%s' does not exist", remoteName)
+	}
+
 	output, err := g.executeGitCommand("rev-parse", "--abbrev-ref", remoteName+"/HEAD")
 	if err != nil {
-		g.log.Warn("Remote HEAD not configured", "remoteName", remoteName, "error", err)
-		return "", nil
+		if strings.Contains(err.Error(), "unknown revision") {
+			g.log.Debug("Remote HEAD not configured", "remoteName", remoteName)
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to get remote HEAD: %w", err)
 	}
 
 	branchName := strings.TrimPrefix(output, remoteName+"/")
@@ -326,7 +361,8 @@ func parseRemoteBranchesFromFormat(output string) []RemoteBranch {
 
 	for _, block := range blocks {
 		branch := parseRemoteBranchBlock(block)
-		if branch.Name != "" {
+		// Skip symbolic HEAD ref (e.g., origin/HEAD -> origin/main)
+		if branch.Name != "" && branch.Name != "HEAD" {
 			branches = append(branches, branch)
 		}
 	}
@@ -399,7 +435,7 @@ func (g *GitCli) SyncTags(remoteName string) error {
 	}
 
 	g.log.Info("Syncing tags from remote", "remote", remoteName)
-	args := []string{"fetch", remoteName, "--prune", "--prune-tags"}
+	args := []string{"fetch", remoteName, "--prune", "--prune-tags", "--tags"}
 	return g.executeMutatingCommand("failed to sync tags from remote", args...)
 }
 

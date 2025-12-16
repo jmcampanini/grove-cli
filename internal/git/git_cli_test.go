@@ -580,6 +580,23 @@ subject Feature
 			wantNames:  []string{"main", "develop", "feature/test"},
 			wantLength: 3,
 		},
+		{
+			name: "filters out symbolic HEAD ref",
+			input: `ref origin/HEAD
+commit abc1234
+committedOn 2024-01-15T10:30:00Z
+committedBy John
+subject Initial
+
+ref origin/main
+commit abc1234
+committedOn 2024-01-15T10:30:00Z
+committedBy John
+subject Initial
+`,
+			wantNames:  []string{"main"},
+			wantLength: 1,
+		},
 	}
 
 	for _, tt := range tests {

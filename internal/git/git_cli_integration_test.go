@@ -40,7 +40,7 @@ func TestGetWorktreeRoot_Integration_FromSubdirectory(t *testing.T) {
 	subdir := filepath.Join(repo.path(), "subdir", "nested")
 	require.NoError(t, os.MkdirAll(subdir, 0755))
 
-	subdirGit := New(false, subdir).(*GitCli)
+	subdirGit := New(false, subdir, testTimeout).(*GitCli)
 	root, err := subdirGit.GetWorktreeRoot()
 
 	require.NoError(t, err)
@@ -54,7 +54,7 @@ func TestGetWorktreeRoot_Integration_OutsideRepo(t *testing.T) {
 
 	// Use temp dir that's not a git repo
 	tmpDir := t.TempDir()
-	outsideGit := New(false, tmpDir).(*GitCli)
+	outsideGit := New(false, tmpDir, testTimeout).(*GitCli)
 
 	root, err := outsideGit.GetWorktreeRoot()
 
@@ -181,7 +181,7 @@ func TestGetMainWorktreePath_Integration_FromLinkedWorktree(t *testing.T) {
 	repo.createWorktree(worktreePath, "feature")
 
 	// Create GitCli pointing to the linked worktree
-	linkedGit := New(false, worktreePath).(*GitCli)
+	linkedGit := New(false, worktreePath, testTimeout).(*GitCli)
 
 	mainPath, err := linkedGit.GetMainWorktreePath()
 
@@ -222,7 +222,7 @@ func TestListLocalBranches_Integration_EmptyRepo(t *testing.T) {
 	runGit(t, dir, "config", "user.email", "test@example.com")
 	runGit(t, dir, "config", "user.name", "Test User")
 
-	git := New(false, dir).(*GitCli)
+	git := New(false, dir, testTimeout).(*GitCli)
 	branches, err := git.ListLocalBranches()
 
 	require.NoError(t, err)
@@ -368,7 +368,7 @@ func TestListRemoteBranches_Integration(t *testing.T) {
 	branches, err := repo.Git.ListRemoteBranches("origin")
 
 	require.NoError(t, err)
-	// Should have origin/main and origin/HEAD
+	// Should have origin/main (origin/HEAD is filtered out)
 	names := remoteBranchNames(branches)
 	assert.Contains(t, names, "main")
 }
@@ -623,7 +623,26 @@ func TestGetRepoDefaultBranch_Integration(t *testing.T) {
 	assert.Equal(t, "main", branch)
 }
 
-func TestGetRepoDefaultBranch_Integration_NoRemoteHEAD(t *testing.T) {
+func TestGetRepoDefaultBranch_Integration_RemoteExistsWithoutHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	repo := newTestRepo(t)
+	repo.commit("initial commit")
+	repo.addRemote("origin")
+
+	// Remote exists but HEAD is not set - should return empty string, not error
+	// (remote HEAD is only set after fetch or explicit set-head)
+	runGit(t, repo.path(), "remote", "set-head", "origin", "-d")
+
+	branch, err := repo.Git.GetRepoDefaultBranch("origin")
+
+	require.NoError(t, err)
+	assert.Empty(t, branch)
+}
+
+func TestGetRepoDefaultBranch_Integration_RemoteDoesNotExist(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
 	}
@@ -631,10 +650,11 @@ func TestGetRepoDefaultBranch_Integration_NoRemoteHEAD(t *testing.T) {
 	repo := newTestRepo(t)
 	repo.commit("initial commit")
 
-	// No remote, should return empty
-	branch, err := repo.Git.GetRepoDefaultBranch("origin")
+	// No remote configured - should return an error
+	branch, err := repo.Git.GetRepoDefaultBranch("nonexistent")
 
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not exist")
 	assert.Empty(t, branch)
 }
 
@@ -684,7 +704,7 @@ func TestCreateWorktreeForNewBranch_Integration_DryRun(t *testing.T) {
 
 	// Branch should NOT exist
 	// Need a non-dry-run git to check
-	realGit := New(false, repo.path()).(*GitCli)
+	realGit := New(false, repo.path(), testTimeout).(*GitCli)
 	exists, err := realGit.BranchExists("dry-run-feature", false)
 	require.NoError(t, err)
 	assert.False(t, exists)
@@ -713,7 +733,7 @@ func TestCreateWorktreeForNewBranchFromRef_Integration(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify the branch is at the first commit
-	worktreeGit := New(false, worktreePath).(*GitCli)
+	worktreeGit := New(false, worktreePath, testTimeout).(*GitCli)
 	currentSHA := strings.TrimSpace(runGit(t, worktreePath, "rev-parse", "--short", "HEAD"))
 	assert.Equal(t, firstSHA, currentSHA)
 
@@ -762,7 +782,7 @@ func TestCreateWorktreeForExistingBranch_Integration(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify it's on the correct branch
-	worktreeGit := New(false, worktreePath).(*GitCli)
+	worktreeGit := New(false, worktreePath, testTimeout).(*GitCli)
 	branch, err := worktreeGit.GetCurrentBranch()
 	require.NoError(t, err)
 	assert.Equal(t, "existing-branch", branch)
@@ -869,4 +889,27 @@ func TestSyncTags_Integration_EmptyRemoteName(t *testing.T) {
 	err := repo.Git.SyncTags("")
 
 	require.NoError(t, err)
+}
+
+func TestSyncTags_Integration_RemoteOnlyTag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	repo := newTestRepo(t)
+	repo.commit("initial commit")
+	remoteDir := repo.addRemote("origin")
+
+	// Create a commit reachable only via a tag in the remote.
+	tree := strings.TrimSpace(runGit(t, remoteDir, "rev-parse", "main^{tree}"))
+	remoteCommit := strings.TrimSpace(runGit(t, remoteDir, "-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit-tree", tree, "-m", "remote-only commit"))
+	runGit(t, remoteDir, "tag", "v-remote-only", remoteCommit)
+
+	err := repo.Git.SyncTags("origin")
+
+	require.NoError(t, err)
+
+	tags, err := repo.Git.ListTags()
+	require.NoError(t, err)
+	assert.Contains(t, tagNames(tags), "v-remote-only")
 }

@@ -8,10 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	clog "github.com/charmbracelet/log"
 	"github.com/stretchr/testify/require"
 )
+
+const testTimeout = 30 * time.Second
 
 // newTestGitCli creates a GitCli instance suitable for unit testing.
 // The logger discards output and workingDir is set to a placeholder.
@@ -19,6 +22,7 @@ func newTestGitCli() *GitCli {
 	return &GitCli{
 		dryRun:     false,
 		log:        clog.New(io.Discard),
+		timeout:    testTimeout,
 		workingDir: "/nonexistent",
 	}
 }
@@ -41,7 +45,7 @@ func newTestRepo(t *testing.T) *testRepo {
 	runGit(t, dir, "config", "user.name", "Test User")
 
 	return &testRepo{
-		Git:     New(false, dir).(*GitCli),
+		Git:     New(false, dir, testTimeout).(*GitCli),
 		rootDir: dir,
 		t:       t,
 	}
@@ -58,7 +62,7 @@ func newTestRepoWithDryRun(t *testing.T) *testRepo {
 	runGit(t, dir, "config", "user.name", "Test User")
 
 	return &testRepo{
-		Git:     New(true, dir).(*GitCli),
+		Git:     New(true, dir, testTimeout).(*GitCli),
 		rootDir: dir,
 		t:       t,
 	}

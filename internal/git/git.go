@@ -153,8 +153,12 @@ type Git interface {
 	GetDefaultRemote(fallback string) (string, error)
 
 	// GetRepoDefaultBranch returns the default branch name by querying the remote's HEAD reference.
-	// Returns ("", nil) if the remote is not configured or the remote HEAD is not set.
-	// Returns an error only if the git command itself fails (e.g., git not installed).
+	// Returns the branch name (e.g., "main") if the remote HEAD is configured.
+	// Returns ("", nil) if the remote exists but the remote HEAD is not set.
+	// Returns an error if:
+	//   - The remote does not exist
+	//   - Not in a git repository
+	//   - Git command fails (e.g., git not installed)
 	// This works in both regular repositories and worktrees.
 	GetRepoDefaultBranch(remoteName string) (string, error)
 
