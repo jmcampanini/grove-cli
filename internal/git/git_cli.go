@@ -442,8 +442,8 @@ func (g *GitCli) SyncTags(remoteName string) error {
 func (g *GitCli) ListTags() ([]Tag, error) {
 	format := `name %(refname:short)
 objecttype %(objecttype)
-objectsha %(objectname:short)
-derefsha %(*objectname:short)
+objectsha %(objectname)
+derefsha %(*objectname)
 taggername %(taggername)
 taggeremail %(taggeremail)
 taggedon %(taggerdate:iso-strict)

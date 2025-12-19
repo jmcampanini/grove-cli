@@ -807,9 +807,9 @@ func TestParseWorktreeBlock(t *testing.T) {
 
 	// Setup branch and tag maps for tests
 	mainBranch := NewLocalBranch("main", "", "/home/user/project", true, 0, 0,
-		NewCommit("abc1234", "Initial", time.Time{}, "John"))
+		NewCommit("abc1234567890abcdef1234567890abcdef12345", "Initial", time.Time{}, "John"))
 	featureBranch := NewLocalBranch("feature", "", "/home/user/feature", true, 0, 0,
-		NewCommit("def5678", "Feature", time.Time{}, "Jane"))
+		NewCommit("def5678901234567890abcdef1234567890abcde", "Feature", time.Time{}, "Jane"))
 
 	branchMap := map[string]LocalBranch{
 		"main":    mainBranch,
@@ -817,11 +817,11 @@ func TestParseWorktreeBlock(t *testing.T) {
 	}
 
 	tagV1 := NewTag("v1.0.0",
-		NewCommit("ghi9012", "Release", time.Time{}, "Bob"),
+		NewCommit("9012345678901234567890abcdef1234567890ab", "Release", time.Time{}, "Bob"),
 		"Release", "Bob", "bob@example.com", time.Time{})
 
 	tagMap := map[string]Tag{
-		"ghi9012": tagV1,
+		"9012345678901234567890abcdef1234567890ab": tagV1,
 	}
 
 	tests := []struct {
@@ -836,7 +836,7 @@ func TestParseWorktreeBlock(t *testing.T) {
 			name: "worktree with branch",
 			input: []string{
 				"worktree /home/user/project",
-				"HEAD abc1234",
+				"HEAD abc1234567890abcdef1234567890abcdef12345",
 				"branch refs/heads/main",
 			},
 			branchMap: branchMap,
@@ -848,7 +848,7 @@ func TestParseWorktreeBlock(t *testing.T) {
 			name: "worktree with different branch",
 			input: []string{
 				"worktree /home/user/feature",
-				"HEAD def5678",
+				"HEAD def5678901234567890abcdef1234567890abcde",
 				"branch refs/heads/feature",
 			},
 			branchMap: branchMap,
@@ -860,7 +860,7 @@ func TestParseWorktreeBlock(t *testing.T) {
 			name: "detached HEAD worktree with tag",
 			input: []string{
 				"worktree /home/user/release",
-				"HEAD ghi9012",
+				"HEAD 9012345678901234567890abcdef1234567890ab",
 				"detached",
 			},
 			branchMap: branchMap,
@@ -883,7 +883,7 @@ func TestParseWorktreeBlock(t *testing.T) {
 			name: "worktree with unknown branch",
 			input: []string{
 				"worktree /home/user/unknown",
-				"HEAD xyz000",
+				"HEAD 0000567890abcdef1234567890abcdef12345678",
 				"branch refs/heads/unknown",
 			},
 			branchMap: branchMap,

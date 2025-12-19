@@ -567,6 +567,76 @@ func TestListWorktrees_Integration_DetachedHEAD(t *testing.T) {
 	assert.Equal(t, WorktreeRefTypeCommit, detachedWorktree.Ref.Type())
 }
 
+func TestListWorktrees_Integration_DetachedHEAD_WithAnnotatedTag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	repo := newTestRepo(t)
+	repo.commit("initial commit")
+	repo.createAnnotatedTag("v1.0.0", "Release")
+
+	worktreePath := filepath.Join(t.TempDir(), "tag-worktree")
+	runGit(t, repo.path(), "worktree", "add", "--detach", worktreePath, "v1.0.0")
+
+	worktrees, err := repo.Git.ListWorktrees()
+
+	require.NoError(t, err)
+	assert.Len(t, worktrees, 2)
+
+	resolvedPath := resolvePath(t, worktreePath)
+	var tagWorktree *Worktree
+	for i, wt := range worktrees {
+		if wt.AbsolutePath == resolvedPath {
+			tagWorktree = &worktrees[i]
+			break
+		}
+	}
+
+	require.NotNil(t, tagWorktree, "could not find tag worktree at %s", resolvedPath)
+	require.NotNil(t, tagWorktree.Ref)
+	assert.Equal(t, WorktreeRefTypeTag, tagWorktree.Ref.Type())
+	tag, ok := tagWorktree.Ref.FullTag()
+	require.True(t, ok)
+	require.NotNil(t, tag)
+	assert.Equal(t, "v1.0.0", tag.Name)
+}
+
+func TestListWorktrees_Integration_DetachedHEAD_WithLightweightTag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	repo := newTestRepo(t)
+	repo.commit("initial commit")
+	repo.createLightweightTag("v0.1.0")
+
+	worktreePath := filepath.Join(t.TempDir(), "lightweight-tag-worktree")
+	runGit(t, repo.path(), "worktree", "add", "--detach", worktreePath, "v0.1.0")
+
+	worktrees, err := repo.Git.ListWorktrees()
+
+	require.NoError(t, err)
+	assert.Len(t, worktrees, 2)
+
+	resolvedPath := resolvePath(t, worktreePath)
+	var tagWorktree *Worktree
+	for i, wt := range worktrees {
+		if wt.AbsolutePath == resolvedPath {
+			tagWorktree = &worktrees[i]
+			break
+		}
+	}
+
+	require.NotNil(t, tagWorktree, "could not find tag worktree at %s", resolvedPath)
+	require.NotNil(t, tagWorktree.Ref)
+	assert.Equal(t, WorktreeRefTypeTag, tagWorktree.Ref.Type())
+	tag, ok := tagWorktree.Ref.FullTag()
+	require.True(t, ok)
+	require.NotNil(t, tag)
+	assert.Equal(t, "v0.1.0", tag.Name)
+}
+
 // =============================================================================
 // GetDefaultRemote tests
 // =============================================================================
