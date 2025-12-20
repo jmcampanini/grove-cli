@@ -249,43 +249,17 @@ func splitIntoBlocks(output string) [][]string {
 }
 
 func parseBranchBlock(lines []string) LocalBranch {
-	var (
-		ahead                int
-		behind               int
-		committedBy          string
-		committedOn          time.Time
-		isCheckedOut         bool
-		name                 string
-		sha                  string
-		subject              string
-		upstreamName         string
-		worktreeAbsolutePath string
-	)
+	fields := parseLineFields(lines)
 
-	for _, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "branch "):
-			name = strings.TrimPrefix(line, "branch ")
-		case strings.HasPrefix(line, "checkedOut "):
-			isCheckedOut = strings.TrimPrefix(line, "checkedOut ") == "true"
-		case strings.HasPrefix(line, "commit "):
-			sha = strings.TrimPrefix(line, "commit ")
-		case strings.HasPrefix(line, "upstream "):
-			upstreamName = strings.TrimPrefix(line, "upstream ")
-		case strings.HasPrefix(line, "track "):
-			track := strings.TrimPrefix(line, "track ")
-			ahead, behind = parseTrackInfo(track)
-		case strings.HasPrefix(line, "committedOn "):
-			dateStr := strings.TrimPrefix(line, "committedOn ")
-			committedOn = parseISO8601Date(dateStr)
-		case strings.HasPrefix(line, "committedBy "):
-			committedBy = strings.TrimPrefix(line, "committedBy ")
-		case strings.HasPrefix(line, "subject "):
-			subject = strings.TrimPrefix(line, "subject ")
-		case strings.HasPrefix(line, "worktreepath "):
-			worktreeAbsolutePath = strings.TrimPrefix(line, "worktreepath ")
-		}
-	}
+	name := fields["branch"]
+	isCheckedOut := fields["checkedOut"] == "true"
+	sha := fields["commit"]
+	upstreamName := fields["upstream"]
+	ahead, behind := parseTrackInfo(fields["track"])
+	committedOn := parseISO8601Date(fields["committedOn"])
+	committedBy := fields["committedBy"]
+	subject := fields["subject"]
+	worktreeAbsolutePath := fields["worktreepath"]
 
 	commit := NewCommit(sha, subject, committedOn, committedBy)
 	return NewLocalBranch(name, upstreamName, worktreeAbsolutePath, isCheckedOut, ahead, behind, commit)
@@ -371,35 +345,21 @@ func parseRemoteBranchesFromFormat(output string) []RemoteBranch {
 }
 
 func parseRemoteBranchBlock(lines []string) RemoteBranch {
-	var (
-		committedBy string
-		committedOn time.Time
-		name        string
-		remoteName  string
-		sha         string
-		subject     string
-	)
+	fields := parseLineFields(lines)
 
-	for _, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "ref "):
-			// ref is "origin/main", split on first "/" to get remote and branch name
-			ref := strings.TrimPrefix(line, "ref ")
-			if idx := strings.Index(ref, "/"); idx != -1 {
-				remoteName = ref[:idx]
-				name = ref[idx+1:]
-			}
-		case strings.HasPrefix(line, "commit "):
-			sha = strings.TrimPrefix(line, "commit ")
-		case strings.HasPrefix(line, "committedOn "):
-			dateStr := strings.TrimPrefix(line, "committedOn ")
-			committedOn = parseISO8601Date(dateStr)
-		case strings.HasPrefix(line, "committedBy "):
-			committedBy = strings.TrimPrefix(line, "committedBy ")
-		case strings.HasPrefix(line, "subject "):
-			subject = strings.TrimPrefix(line, "subject ")
+	// ref is "origin/main", split on first "/" to get remote and branch name
+	var name, remoteName string
+	if ref := fields["ref"]; ref != "" {
+		if idx := strings.Index(ref, "/"); idx != -1 {
+			remoteName = ref[:idx]
+			name = ref[idx+1:]
 		}
 	}
+
+	sha := fields["commit"]
+	committedOn := parseISO8601Date(fields["committedOn"])
+	committedBy := fields["committedBy"]
+	subject := fields["subject"]
 
 	commit := NewCommit(sha, subject, committedOn, committedBy)
 	return NewRemoteBranch(name, remoteName, commit)
@@ -487,19 +447,22 @@ func parseTagsFromFormat(output string) []Tag {
 	return tags
 }
 
-// parseTagFields extracts key-value pairs from lines in "key value" format.
-func parseTagFields(lines []string) map[string]string {
+// parseLineFields extracts key-value pairs from lines in "key value" format.
+// Lines without a space are treated as keys with empty string values.
+func parseLineFields(lines []string) map[string]string {
 	fields := make(map[string]string, len(lines))
 	for _, line := range lines {
 		if idx := strings.Index(line, " "); idx != -1 {
 			fields[line[:idx]] = line[idx+1:]
+		} else if line != "" {
+			fields[line] = ""
 		}
 	}
 	return fields
 }
 
 func parseTagBlock(lines []string) Tag {
-	fields := parseTagFields(lines)
+	fields := parseLineFields(lines)
 
 	name := fields["name"]
 	objectType := fields["objecttype"]
@@ -613,29 +576,18 @@ func (g *GitCli) parseWorktreesFromPorcelain(output string, branchMap map[string
 }
 
 func (g *GitCli) parseWorktreeBlock(lines []string, branchMap map[string]LocalBranch, tagMap map[string]Tag) (Worktree, error) {
-	var (
-		absolutePath string
-		branchName   string
-		detached     bool
-		sha          string
-	)
+	fields := parseLineFields(lines)
 
-	for _, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "worktree "):
-			absolutePath = strings.TrimPrefix(line, "worktree ")
-		case strings.HasPrefix(line, "HEAD "):
-			sha = strings.TrimPrefix(line, "HEAD ")
-		case strings.HasPrefix(line, "branch "):
-			ref := strings.TrimPrefix(line, "branch ")
-			branchName = strings.TrimPrefix(ref, "refs/heads/")
-		case line == "detached":
-			detached = true
-		case strings.HasPrefix(line, "bare"):
-			// Bare worktrees don't have a ref, skip
-			return Worktree{AbsolutePath: absolutePath}, nil
-		}
+	absolutePath := fields["worktree"]
+	sha := fields["HEAD"]
+
+	// Bare worktrees don't have a ref, skip
+	if _, isBare := fields["bare"]; isBare {
+		return Worktree{AbsolutePath: absolutePath}, nil
 	}
+
+	branchName := strings.TrimPrefix(fields["branch"], "refs/heads/")
+	_, detached := fields["detached"]
 
 	worktree := Worktree{AbsolutePath: absolutePath}
 
