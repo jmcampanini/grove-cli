@@ -6,13 +6,32 @@ This plan implements the grove-cli `create` command using a layered architecture
 
 **Target Command:**
 ```bash
-grc the name of a feature im working on
+grove create "the name of a feature im working on"
 ```
 
 This will:
 1. Create a git branch with configurable naming convention
-2. Create a worktree with configurable naming convention
+2. Create a worktree (using the newly created branch) with configurable naming convention
 3. Output a path for shell integration to cd into (using zoxide if available)
+
+**Terminology:**
+- **Main Worktree**: The original git repository directory (e.g., `/path/to/project`)
+- **Workspace Root**: The parent directory of the main worktree (e.g., `/path/to`). All additional worktrees are created as siblings to the main worktree within this directory.
+- **Worktree**: An additional working directory linked to the same git repository
+
+Example directory structure:
+```
+/path/to/                    <- Workspace Root
+├── project/                 <- Main Worktree
+│   └── .git/
+├── wt-add-user-auth/        <- Additional Worktree
+└── wt-fix-login-bug/        <- Additional Worktree
+```
+
+**Development Workflow:**
+- Commit code after completing each major step within a phase
+- Commit all phase changes before moving to the next phase
+- Use descriptive commit messages that reference the phase and step
 
 ---
 
@@ -65,6 +84,7 @@ package config
 // Config represents the complete grove configuration
 type Config struct {
     Branch   BranchConfig
+    Git      GitConfig
     Slugify  SlugifyConfig
     Worktree WorktreeConfig
 }
@@ -72,6 +92,11 @@ type Config struct {
 // BranchConfig configures branch naming
 type BranchConfig struct {
     NewPrefix string `toml:"new_prefix"` // e.g., "feature/"
+}
+
+// GitConfig configures git command execution
+type GitConfig struct {
+    Timeout time.Duration `toml:"timeout"` // Timeout for git commands (e.g., "5s")
 }
 
 // SlugifyConfig configures slug generation (matches existing SlugifyOptions)
@@ -104,7 +129,10 @@ package config
 func DefaultConfig() Config {
     return Config{
         Branch: BranchConfig{
-            NewPrefix: "",
+            NewPrefix: "feature/",
+        },
+        Git: GitConfig{
+            Timeout: 5 * time.Second,
         },
         Slugify: SlugifyConfig{
             CollapseDashes:     true,
@@ -116,11 +144,14 @@ func DefaultConfig() Config {
         },
         Worktree: WorktreeConfig{
             NewPrefix:         "wt-",
-            StripBranchPrefix: []string{},
+            StripBranchPrefix: []string{"feature/"},
         },
     }
 }
 ```
+
+**Note on Git Timeout:**
+The git timeout is used when creating the git CLI executor. If a git command takes longer than the timeout, it will be cancelled. This prevents grove from hanging indefinitely on slow or unresponsive git operations.
 
 ### 1.3 Config File Discovery
 
@@ -134,10 +165,13 @@ package config
 // ConfigPaths returns ordered list of config file paths to check (highest to lowest priority)
 // Order:
 // 1. File in current working directory
-// 2. File in git worktree root
-// 3. Files in directories up to home/root
-// 4. File in XDG config directory
-func ConfigPaths(cwd, gitRoot, homeDir string) []string
+// 2. File in current worktree root (if in a worktree)
+// 3. File in git repository root (main worktree)
+// 4. Files in directories up to home/root
+// 5. File in XDG config directory
+//
+// The worktreeRoot and gitRoot may be the same directory if running from the main worktree.
+func ConfigPaths(cwd, worktreeRoot, gitRoot, homeDir string) []string
 ```
 
 Key implementation details:
@@ -165,18 +199,121 @@ type Loader struct {
     fs FileSystem // interface for testability
 }
 
+// FileSystem abstracts file system operations for testability
+type FileSystem interface {
+    // ReadFile reads the entire contents of a file
+    ReadFile(path string) ([]byte, error)
+
+    // Stat returns file info, used to check if path exists and is a file
+    Stat(path string) (os.FileInfo, error)
+}
+
+// OSFileSystem implements FileSystem using the real OS
+type OSFileSystem struct{}
+
+func (OSFileSystem) ReadFile(path string) ([]byte, error) {
+    return os.ReadFile(path)
+}
+
+func (OSFileSystem) Stat(path string) (os.FileInfo, error) {
+    return os.Stat(path)
+}
+
 // Load reads and merges all config files in priority order
 // Returns merged config with defaults as base, plus source paths for debugging
 func (l *Loader) Load(paths []string) (LoadResult, error)
-
-// loadFile reads a single TOML config file
-func (l *Loader) loadFile(path string) (*Config, error)
-
-// merge combines two configs, with overlay taking precedence for non-zero values
-func merge(base, overlay Config) Config
 ```
 
+**Why use an interface:**
+- Enables testing config loading without real files
+- Can use in-memory file system implementations in tests
+
 Note: `LoadResult.SourcePaths` aids debugging by showing which config files were applied.
+
+#### Simplified Loading Approach Using Sequential Decoding
+
+The BurntSushi TOML library provides a natural merging mechanism through its decoding behavior that eliminates the need for an explicit `merge()` function.
+
+**How TOML Decoding Overlays Values:**
+
+When you decode a TOML file into a pre-populated struct using `toml.DecodeFile()`, the decoder overwrites only the fields that are **present in the TOML file**. Fields not mentioned in the TOML file retain their existing values.
+
+This behavior enables a simple sequential loading pattern:
+
+1. Start with `DefaultConfig()` to initialize the struct with defaults
+2. Decode the lowest priority config file (e.g., XDG config) into the struct
+   - Overwrites defaults where values are specified in the file
+3. Decode the next priority file into the same struct
+   - Overwrites previous values where specified in this file
+4. Continue until the highest priority file (e.g., CWD config) is decoded
+
+**Comparison: Sequential Decoding vs Explicit Merge**
+
+There is a subtle but important difference between these approaches:
+
+- **Sequential TOML Decoding**: Overwrites fields that are *present in the TOML file*, even if they have zero values (e.g., `max_length = 0` will overwrite a previous `max_length = 50`)
+- **Explicit Merge Function**: Could be designed to only overwrite *non-zero values*, treating zero values as "not set"
+
+**Recommendation**: Use the simpler sequential decoding approach. It provides clear, predictable behavior: "what's in the config file is what you get." Users who want to reset a value to zero can do so explicitly by setting it in a higher-priority config file.
+
+**Implementation Pattern:**
+
+```go
+func (l *Loader) Load(paths []string) (LoadResult, error) {
+    cfg := DefaultConfig() // Start with defaults
+    var sourcePaths []string
+
+    // Decode each config file sequentially (lowest to highest priority)
+    for _, path := range paths {
+        if !l.fs.Exists(path) {
+            continue // Skip missing files
+        }
+
+        metadata, err := toml.DecodeFile(path, &cfg)
+        if err != nil {
+            return LoadResult{}, fmt.Errorf("failed to parse %s: %w", path, err)
+        }
+
+        // Warn about unknown keys
+        if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
+            // Log warning about unknown config keys
+        }
+
+        sourcePaths = append(sourcePaths, path)
+    }
+
+    return LoadResult{
+        Config:      cfg,
+        SourcePaths: sourcePaths,
+    }, nil
+}
+```
+
+**Validation and Error Detection:**
+
+- Use `metadata.Undecoded()` to detect unknown/extra fields for strict validation
+- This allows warning users about typos or deprecated config keys
+- Consider using `metadata.IsDefined()` to check if specific keys were present in the TOML file
+
+**Struct Field Tags:**
+
+- Use the format `toml:"field_name"` for struct field tags
+- Follow TOML naming conventions (snake_case) in the tags
+```
+
+**Config Loading Edge Cases to Handle:**
+
+1. **File doesn't exist**: Skip gracefully, continue to next file in priority order
+2. **File exists but isn't readable** (permission denied): Return error with clear message including path
+3. **File is empty**: Treat as valid (no values to overlay), continue
+4. **Invalid TOML syntax**: Return error with file path and line number from parser
+5. **Invalid config values**:
+   - Negative MaxLength in SlugifyConfig
+   - HashLength < 0
+   - Validate at load time with descriptive errors
+6. **Config path is a directory**: Skip or return error (recommend skip)
+7. **Unknown/extra fields**: Warn user (using metadata.Undecoded()) but don't error
+8. **Home directory not available**: Handle `os.UserHomeDir()` errors gracefully for XDG path
 
 ### 1.5 Config Testing Strategy
 
@@ -185,11 +322,26 @@ Note: `LoadResult.SourcePaths` aids debugging by showing which config files were
 Tests following existing patterns from `slugify_test.go`:
 
 - `TestDefaultConfig` - verify defaults are sensible
-- `TestConfigPaths` - verify path ordering
-- `TestLoadFile` - parse various TOML configs
-- `TestMerge` - verify overlay behavior
+- `TestConfigPaths` - verify path ordering (use table-driven tests for various path scenarios)
+- `TestLoad_SingleFile` - parse various TOML configs (use table-driven tests for different config files)
+- `TestLoad_SequentialOverlay` - verify sequential decoding overlays values correctly (use table-driven tests with multiple config files to verify that higher priority files overwrite lower priority files)
+- `TestLoad_ZeroValueOverwrite` - verify that zero values in TOML files overwrite previous values (documents the sequential decoding behavior)
 - `TestLoad_Integration` - full loading with temp files
 - `TestLoad_ReturnsSourcePaths` - verify source path tracking
+- `TestLoad_UndecodedKeys` - test detection of unknown config keys for user warnings
+
+**Edge Case Tests:**
+
+- `TestLoad_MissingFile` - verify missing files are skipped gracefully
+- `TestLoad_UnreadableFile` - verify permission denied errors include file path
+- `TestLoad_EmptyFile` - verify empty files are treated as valid with no overlay
+- `TestLoad_InvalidTOML` - verify syntax errors include file path and line number
+- `TestLoad_InvalidConfigValues` - verify validation catches:
+  - Negative MaxLength
+  - Negative HashLength
+  - Other constraint violations with descriptive errors
+- `TestLoad_PathIsDirectory` - verify directories are skipped (or error with clear message)
+- `TestConfigPaths_HomeDirectoryError` - verify graceful handling when home directory unavailable
 
 **Dependencies:** Add to `go.mod`:
 ```
@@ -204,6 +356,8 @@ github.com/BurntSushi/toml v1.x.x
 - [ ] Config path discovery returns correct order
 - [ ] Config loader merges files and tracks source paths
 - [ ] All tests pass, `make check` succeeds
+
+**Commit:** After completing this phase, commit all changes with a descriptive message.
 
 ---
 
@@ -234,19 +388,25 @@ func (g *BranchNameGenerator) Generate(phrase string) string
 
 **File:** `internal/naming/worktree.go`
 
+Don't assume branch names are pre-slugified - the worktree generator should ensure consistency by applying slugify rules.
+
 ```go
 package naming
 
 // WorktreeNameGenerator creates worktree directory names
 type WorktreeNameGenerator struct {
     prefix            string
+    slugifyOpts       SlugifyOptions
     stripBranchPrefix []string
 }
 
 // NewWorktreeNameGenerator creates a generator from config
-func NewWorktreeNameGenerator(worktreeCfg WorktreeConfig) *WorktreeNameGenerator
+// Note: Takes SlugifyConfig to ensure branch names are properly slugified
+// even if passed in raw form
+func NewWorktreeNameGenerator(worktreeCfg WorktreeConfig, slugCfg SlugifyConfig) *WorktreeNameGenerator
 
 // Generate creates a worktree name from a branch name
+// The branch name is slugified to ensure consistency, then prefixes are stripped
 // e.g., "feature/add-user-auth" -> "wt-add-user-auth"
 func (g *WorktreeNameGenerator) Generate(branchName string) string
 ```
@@ -257,7 +417,7 @@ func (g *WorktreeNameGenerator) Generate(branchName string) string
 - `internal/naming/branch_test.go`
 - `internal/naming/worktree_test.go`
 
-Test cases:
+Test cases (use table-driven tests for these scenarios):
 - Branch generation with various prefixes
 - Branch generation with slugify options (max length, hash)
 - Worktree generation with prefix stripping
@@ -270,6 +430,8 @@ Test cases:
 - [ ] Worktree name generator correctly strips prefixes
 - [ ] Edge cases handled (empty input, special chars)
 - [ ] All tests pass, `make check` succeeds
+
+**Commit:** After completing this phase, commit all changes with a descriptive message.
 
 ---
 
@@ -297,6 +459,8 @@ func Execute() error {
 
 func init() {
     // Global flags here (future: --config override)
+    // TODO: Add version command (grove version) to show version info
+    // TODO: Add shell completion command (grove completion bash|zsh|fish)
 }
 ```
 
@@ -310,39 +474,105 @@ package cmd
 import "github.com/spf13/cobra"
 
 var createCmd = &cobra.Command{
-    Use:   "create [phrase]",
+    Use:   "create <phrase>",
     Short: "Create a new branch and worktree",
     Long: `Create creates a new git branch and worktree from a descriptive phrase.
 
+The new branch is created from the current HEAD (the commit you're currently on).
 The phrase is converted to a branch name using the configured slugify rules
 and prefix. A worktree is then created with the configured worktree naming.
 
 Example:
-  grove create add user authentication
-  grove create "fix bug in login"`,
-    Args: cobra.MinimumNArgs(1),
+  grove create "add user authentication"
+  grove create "fix bug in login"
+
+Note: The create command takes a single quoted string argument. The shell wrapper
+function (grc) can handle passing arbitrary phrases by quoting the arguments.`,
+    Args: cobra.ExactArgs(1), // Require exactly one argument (the phrase)
     RunE: runCreate,
 }
 
+**Output Behavior:**
+- **stdout**: Only the worktree directory path (e.g., `/path/to/workspace/wt-add-user-auth`)
+  - This allows clean integration with shell scripts: `cd $(grove create "...")`
+- **stderr**: All other output including:
+  - Error messages
+  - Warnings (e.g., unknown config keys)
+  - Informational messages (if any)
+
+This separation ensures the create command can be used in pipelines and scripts without parsing issues.
+
 func init() {
     rootCmd.AddCommand(createCmd)
-    // Future: --base flag for base branch
-    // Future: --dry-run flag
+    // TODO: Add --dry-run flag to show what would be created without executing
+    // TODO: Add --base flag to specify a different base commit/branch (default: HEAD)
+    // Future: ValidArgsFunction for shell completion of recent branches/phrases
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
-    // 1. Join args into phrase
+    // Note: Using RunE instead of Run to return errors for proper handling
+    // Cobra will automatically display errors with "Error:" prefix
+
+    phrase := args[0]
+
+    // 1. Validate phrase is not empty
+    if strings.TrimSpace(phrase) == "" {
+        return errors.New("phrase cannot be empty")
+    }
+
     // 2. Load config (with source path tracking for error messages)
     // 3. Validate we're in a git repository
-    // 4. Generate branch name
-    // 5. Check if branch already exists
-    // 6. Generate worktree name
-    // 7. Check if worktree path already exists
-    // 8. Determine worktree path (workspace root + worktree name)
-    // 9. Call git.CreateWorktreeForNewBranch
-    // 10. Output the worktree path for shell integration
+    // 4. Generate branch name (slugify the phrase)
+    // 5. Validate slug is not empty - error out with helpful message
+    //    If slug is empty:
+    //      Error: phrase '!!!' produces an empty branch name after slugification
+    //
+    //      Please provide a phrase with at least one alphanumeric character.
+    //      Examples:
+    //        grove create "add user auth"
+    //        grove create "fix-bug-123"
+    // 6. Check if branch already exists - error out with helpful message
+    //    If branch exists:
+    //      Error: branch 'feature/add-user-auth' already exists
+    //
+    //      To use the existing branch, try:
+    //        git worktree add <path> feature/add-user-auth
+    //
+    //      Or choose a different name for your new branch.
+    // 7. Generate worktree name
+    // 8. Determine worktree path (workspace root + worktree name). The workspace root is the parent directory of the main worktree.
+    // 9. Check if worktree path already exists - error out with helpful message
+    //    If path exists:
+    //      Error: worktree path '/path/to/workspace/wt-add-user-auth' already exists
+    //
+    //      To remove the existing worktree:
+    //        git worktree remove wt-add-user-auth
+    //
+    //      Or choose a different name for your new branch.
+    // 10. Create branch and worktree from current HEAD
+    // 11. Output ONLY the worktree path to stdout (for shell integration)
+    //     All other messages go to stderr
     return nil
 }
+```
+
+**Implementation Notes:**
+- Uses `RunE` instead of `Run` for proper error handling (see Cobra CLI Best Practices)
+- Uses `cobra.ExactArgs(1)` to require exactly one phrase argument
+- Added validation for empty phrase input
+- The create command accepts a single string parameter (already quoted by the shell)
+- Future shell completion support can be added via `ValidArgsFunction`
+
+**Empty Slug Error:**
+When the slugified phrase results in an empty string (e.g., input was only special characters), error out with helpful information:
+
+```
+Error: phrase '!!!' produces an empty branch name after slugification
+
+Please provide a phrase with at least one alphanumeric character.
+Examples:
+  grove create "add user auth"
+  grove create "fix-bug-123"
 ```
 
 ### 3.3 Init Command (Shell Functions)
@@ -406,9 +636,10 @@ func main() {
 
 Test approach:
 - Use Cobra's testing utilities
-- Mock git interface for create command
+- Mock git interface for create command (use interface test doubles)
 - Capture stdout for init command output verification
 - Integration tests with temporary git repos (following patterns from `git_cli_integration_test.go`)
+- Use table-driven tests where applicable for testing various command-line argument combinations
 
 **Dependencies:** Add to `go.mod`:
 ```
@@ -424,37 +655,91 @@ github.com/spf13/cobra v1.x.x
 - [ ] Init command outputs valid shell functions
 - [ ] Error messages are clear and actionable
 - [ ] All tests pass, `make check` succeeds
+- [ ] TODO: Add version command in future iteration
+- [ ] TODO: Add shell completion command in future iteration
+
+**Commit:** After completing this phase, commit all changes with a descriptive message.
 
 ---
 
 ## Phase 4: Shell Integration Layer
 
-### 4.1 Shell Function Templates
+### 4.1 Shell Function Templates and File Structure
+
+**File Structure for Shell Scripts:**
+```
+internal/shell/
+├── functions.go       # Go code that uses embedded scripts
+├── functions_test.go
+└── scripts/
+    ├── grc.fish      # Fish shell function (standalone file)
+    ├── grc.bash      # Bash shell function (standalone file)
+    └── grc.zsh       # Zsh shell function (can be same as bash)
+```
+
+**Embedding Scripts:**
+
+Shell scripts live as files in the repo and are embedded using Go's `embed` package. This makes the content easy to see and edit.
 
 **File:** `internal/shell/functions.go`
 
 ```go
 package shell
 
+import (
+    _ "embed"
+)
+
+//go:embed scripts/grc.fish
+var fishScript string
+
+//go:embed scripts/grc.bash
+var bashScript string
+
+//go:embed scripts/grc.zsh
+var zshScript string
+
 // FunctionGenerator generates shell functions
 type FunctionGenerator struct{}
 
-// GenerateFish returns fish shell functions
-func (g *FunctionGenerator) GenerateFish() string
+// GenerateFish returns the fish shell function
+func (g *FunctionGenerator) GenerateFish() string {
+    return fishScript
+}
 
-// GenerateZsh returns zsh shell functions
-func (g *FunctionGenerator) GenerateZsh() string
+// GenerateZsh returns the zsh shell function
+func (g *FunctionGenerator) GenerateZsh() string {
+    return zshScript
+}
 
-// GenerateBash returns bash shell functions
-func (g *FunctionGenerator) GenerateBash() string
+// GenerateBash returns the bash shell function
+func (g *FunctionGenerator) GenerateBash() string {
+    return bashScript
+}
 ```
 
+**Benefits:**
+- Shell scripts are easy to read, edit, and test in isolation
+- Syntax highlighting works in editors
+- Can be validated with shell linting tools
+- Compile-time embedding ensures scripts are always included
+
 ### 4.2 Shell Function Specifications
+
+**Function Naming Convention:**
+- Public functions: `grc` (short, user-friendly names)
+- Internal helper functions: `__grove_*` prefix (e.g., `__grove_handle_error`)
+  - The double underscore prefix follows shell convention for "private" functions
+  - Prevents collisions with other shell functions in the user's environment
+
+The current implementation uses a single self-contained `grc` function. As the shell integration grows and requires helper functions, they should use the `__grove_` prefix to avoid name collisions.
 
 **Fish (`grc` function):**
 ```fish
 function grc --description "Grove create - create branch and worktree"
-    set -l output (grove create $argv)
+    # Tries to use zoxide (z) for navigation if available, falls back to cd
+    # Pass all arguments as a single quoted string to grove create
+    set -l output (grove create "$argv")
     if test $status -eq 0
         if command -q z
             z $output
@@ -471,8 +756,10 @@ end
 **Zsh/Bash (`grc` function):**
 ```bash
 grc() {
+    # Tries to use zoxide (z) for navigation if available, falls back to cd
     local output
-    output=$(grove create "$@")
+    # Pass all arguments as a single quoted string to grove create
+    output=$(grove create "$*")
     if [ $? -eq 0 ]; then
         if command -v z &> /dev/null; then
             z "$output"
@@ -486,14 +773,51 @@ grc() {
 }
 ```
 
-### 4.3 Naming Convention
+**Shell Wrapper Notes:**
+- Fish: `"$argv"` passes all arguments as a single quoted string
+- Bash/Zsh: `"$*"` joins all arguments with spaces into a single string
+- This allows users to invoke `grc add user authentication` without manually quoting
+- The wrapper handles the quoting so the grove CLI receives a single argument
+- **Important**: These shell functions rely on `grove create` outputting only the worktree path to stdout (see section 3.2 Output Behavior). This enables clean command substitution and navigation without parsing issues.
+
+### 4.3 Shell Integration Best Practices
+
+When implementing shell functions, follow these shell-specific best practices:
+
+**Fish Shell:**
+- Use `$status` for exit code (not `$?` like bash)
+- Use `if command` directly or `if test $status -eq 0` for success checks
+- Use `set -l varname value` for local variables
+- Use `command -q` to check if a command exists (e.g., `command -q z` for zoxide)
+- Strings are quoted with `"` (single quotes are less common)
+
+**Bash/Zsh:**
+- Use `$?` for exit code of last command
+- Use `command -v cmd >/dev/null 2>&1` to check if command exists
+- Use `local varname` for local variables
+- Redirect errors to stderr with `>&2`
+- Use `set -e` in scripts to exit on error (not typically in functions)
+
+**All Shells:**
+- Check command success before proceeding
+- Handle errors gracefully with helpful messages
+- Use stderr for errors, stdout for output that will be consumed by other commands
+- Test shell syntax with `bash -n script.sh` or `fish --no-execute script.fish`
+
+**Implementation Notes:**
+- The shell functions in section 4.2 follow these practices
+- Fish: Uses `test $status -eq 0` for success check and `command -q z` for zoxide detection
+- Bash/Zsh: Uses `[ $? -eq 0 ]` for success check and `command -v z &> /dev/null` for zoxide detection
+- All functions properly handle errors by echoing output and returning non-zero exit codes
+
+### 4.4 Naming Convention
 
 Per spec requirement for extendable naming:
 - `grc` - Grove Create
 - Future: `grw` - Grove Worktree (list/switch)
 - Future: `grd` - Grove Delete
 
-### 4.4 Shell Testing Strategy
+### 4.5 Shell Testing Strategy
 
 **File:** `internal/shell/functions_test.go`
 
@@ -502,7 +826,7 @@ Per spec requirement for extendable naming:
 - Verify grove command invocation
 - Optional: Shell syntax validation using shell -n
 
-### 4.5 Phase 4 Milestone
+### 4.6 Phase 4 Milestone
 
 **Definition of Done:**
 - [ ] Fish function works with zoxide fallback
@@ -510,6 +834,8 @@ Per spec requirement for extendable naming:
 - [ ] Bash function works with zoxide fallback
 - [ ] Shell syntax validates with `shell -n`
 - [ ] All tests pass, `make check` succeeds
+
+**Commit:** After completing this phase, commit all changes with a descriptive message.
 
 ---
 
@@ -540,11 +866,176 @@ grove-cli/
 │   │   └── worktree_test.go
 │   └── shell/
 │       ├── functions.go   # Shell function generation
-│       └── functions_test.go
+│       ├── functions_test.go
+│       └── scripts/
+│           ├── grc.fish   # Fish shell function
+│           ├── grc.bash   # Bash shell function
+│           └── grc.zsh    # Zsh shell function
 ├── go.mod                 # Add cobra, toml deps
 ├── main.go                # Updated entry point
 └── Makefile               # (existing)
 ```
+
+---
+
+## Go Best Practices
+
+This section outlines Go best practices based on Effective Go and the Google Go Style Guide that should be followed throughout the implementation.
+
+### Error Handling
+
+1. **Idiomatic Error Checking:**
+   - Use the pattern: `if err := doSomething(); err != nil { ... }`
+   - This keeps the error handling close to the operation and limits variable scope
+
+2. **Error Types:**
+   - Return the `error` interface type, not concrete error types
+   - Avoid returning specific types like `*os.PathError` in function signatures
+   - This allows implementation flexibility and better abstraction
+
+3. **Success Returns:**
+   - Return `nil` explicitly for success cases, not a typed nil pointer
+   - Example: `return nil` instead of `return (*MyError)(nil)`
+
+### Testing
+
+1. **Table-Driven Tests:**
+   - Use table-driven tests for functions with multiple input/output combinations
+   - This pattern is especially useful for naming generators, config merging, and validation logic
+   - Example structure:
+     ```go
+     tests := []struct {
+         name    string
+         input   string
+         want    string
+         wantErr bool
+     }{
+         {name: "simple case", input: "foo", want: "bar", wantErr: false},
+         // ... more cases
+     }
+     for _, tt := range tests {
+         t.Run(tt.name, func(t *testing.T) {
+             got, err := functionUnderTest(tt.input)
+             if (err != nil) != tt.wantErr {
+                 t.Errorf("unexpected error state")
+             }
+             if got != tt.want {
+                 t.Errorf("got %v, want %v", got, tt.want)
+             }
+         })
+     }
+     ```
+
+2. **Test Helpers:**
+   - Test helpers should call `t.Helper()` to improve error reporting
+   - This ensures test failures point to the actual test case, not the helper
+
+3. **Error Testing Pattern:**
+   - Use `wantErr bool` field pattern for testing error presence
+   - Don't compare error strings; check for error existence or use errors.Is/errors.As
+
+4. **Test Doubles:**
+   - Create fake implementations of interfaces for testing (test doubles)
+   - Example: FileSystem interface in config loader enables testing without real files
+
+5. **Goroutine Testing:**
+   - Don't use `t.Fatal` in goroutines - use `t.Errorf` instead
+   - `t.Fatal` calls runtime.Goexit which only stops the current goroutine
+
+### Interfaces
+
+1. **Interface Location:**
+   - Define interfaces where they are used (consumer side), not where implemented
+   - This is the "interface segregation" principle
+   - Example: `Loader` defines the `FileSystem` interface it needs
+
+2. **Testability:**
+   - Use interface types for dependencies to enable testability
+   - Allows injecting test doubles without modifying production code
+
+---
+
+## Cobra CLI Best Practices
+
+This section outlines Cobra CLI best practices that should be followed throughout the command layer implementation (Phase 3).
+
+### Command Design
+
+1. **Use `RunE` instead of `Run`:**
+   - Always use `RunE` to return errors from command execution
+   - This allows proper error handling by the caller
+   - Cobra automatically displays errors with "Error:" prefix
+   - Example:
+     ```go
+     RunE: func(cmd *cobra.Command, args []string) error {
+         if err := doSomething(); err != nil {
+             return fmt.Errorf("failed to do something: %w", err)
+         }
+         return nil
+     }
+     ```
+
+2. **Argument Validation:**
+   - Use built-in validators in the `Args` field:
+     - `cobra.ExactArgs(n)` - require exactly n arguments
+     - `cobra.MinimumNArgs(n)` - require at least n arguments
+     - `cobra.MaximumNArgs(n)` - require at most n arguments
+     - `cobra.RangeArgs(min, max)` - require between min and max arguments
+     - `cobra.MatchAll(v1, v2)` - combine multiple validators
+   - Custom `Args` function for complex validation:
+     ```go
+     Args: func(cmd *cobra.Command, args []string) error {
+         if len(args) < 1 {
+             return errors.New("requires a phrase argument")
+         }
+         if strings.TrimSpace(args[0]) == "" {
+             return errors.New("phrase cannot be empty")
+         }
+         return nil
+     }
+     ```
+
+3. **Command Structure:**
+   - Root command defines the application and adds subcommands via `AddCommand()`
+   - Each subcommand handles a specific action
+   - Group related commands for better help output using command annotations
+   - Keep command logic in `RunE` functions; extract complex logic to internal packages
+
+4. **PreRunE/PostRunE Hooks:**
+   - Use for setup (loading config) and cleanup operations
+   - `PersistentPreRunE` is inherited by all subcommands
+   - Example:
+     ```go
+     PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+         // Load config once for all commands
+         cfg, err := config.Load()
+         if err != nil {
+             return fmt.Errorf("failed to load config: %w", err)
+         }
+         cmd.SetContext(context.WithValue(cmd.Context(), "config", cfg))
+         return nil
+     }
+     ```
+
+5. **Shell Completions:**
+   - Define `ValidArgs` for simple static completions
+   - Use `ValidArgsFunction` for dynamic completions (file paths, git branches, etc.)
+   - Enable completion command generation:
+     ```go
+     ValidArgs: []string{"fish", "zsh", "bash"},
+     ```
+   - Note: Shell completion support will be added in future iterations
+
+6. **Error Messages:**
+   - Errors returned from `RunE` are automatically displayed with "Error:" prefix
+   - Include context in error messages using `fmt.Errorf` with `%w`
+   - Provide actionable error messages that suggest solutions
+   - Example: `return fmt.Errorf("branch %q already exists: use --force to override", branchName)`
+
+7. **Command Help:**
+   - Use `Short` for one-line description in command list
+   - Use `Long` for detailed usage in `command --help`
+   - Provide examples in `Long` using the `Example:` section format
 
 ---
 
@@ -566,8 +1057,8 @@ Both are well-maintained, widely-used Go libraries.
 | Risk | Mitigation |
 |------|------------|
 | Not in a git repository | Check early with clear error: "grove must be run inside a git repository" |
-| Branch already exists | Use `BranchExists()` before creation; suggest alternative name or `--force` |
-| Worktree path already exists | Check path before creation; suggest removal or alternative path |
+| Branch already exists | Use `BranchExists()` before creation; error with: "Error: branch 'feature/add-user-auth' already exists\n\nTo use the existing branch, try:\n  git worktree add <path> feature/add-user-auth\n\nOr choose a different name for your new branch." |
+| Worktree path already exists | Check path before creation; error with: "Error: worktree path '/path/to/workspace/wt-add-user-auth' already exists\n\nTo remove the existing worktree:\n  git worktree remove wt-add-user-auth\n\nOr choose a different name for your new branch." |
 | Main worktree path discovery fails | Clear error with troubleshooting steps |
 | Git command execution fails | Surface git's error message with context |
 
@@ -575,16 +1066,24 @@ Both are well-maintained, widely-used Go libraries.
 
 | Risk | Mitigation |
 |------|------------|
+| File doesn't exist | Skip gracefully, continue to next file in priority order |
+| File exists but isn't readable | Return error with clear message including path |
+| File is empty | Treat as valid (no values to overlay), continue |
 | TOML parse error | Include file path and line number in error message |
 | Conflicting configs | Document merge behavior; higher priority wins |
-| Invalid config values | Validate at load time with clear messages |
+| Invalid config values | Validate at load time with clear messages (see section 1.4 for details) |
+| Config path is a directory | Skip gracefully |
+| Unknown/extra fields | Warn user but don't error |
+| Home directory not available | Handle `os.UserHomeDir()` errors gracefully for XDG path |
 | No config found | Use sensible defaults; document in help text |
+
+**Note:** Detailed edge case handling and test coverage is documented in section 1.4.
 
 ### Shell Function Conflicts
 
 | Risk | Mitigation |
 |------|------------|
-| Function name collision | Use `__grove_` prefix for internal functions |
+| Function name collision | Public functions like `grc` use short names; internal helper functions use `__grove_` prefix (e.g., `__grove_handle_error`) to avoid collisions with user's shell environment |
 | Zoxide not in PATH | Detect with `command -v z` and fallback gracefully |
 | Shell function differs from binary name | Document clearly; `grove` = binary, `grc` = shell function |
 
@@ -593,7 +1092,7 @@ Both are well-maintained, widely-used Go libraries.
 | Risk | Mitigation |
 |------|------------|
 | Empty phrase input | Require minimum args; show usage |
-| Phrase produces empty slug | Add hash suffix to guarantee non-empty |
+| Phrase produces empty slug | Error out with helpful information: "Error: phrase '!!!' produces an empty branch name after slugification\n\nPlease provide a phrase with at least one alphanumeric character.\nExamples:\n  grove create \"add user auth\"\n  grove create \"fix-bug-123\"" |
 | Very long phrases | MaxLength config with truncation + hash |
 | Unicode/special characters | Slugify normalizes to ASCII |
 
@@ -609,6 +1108,7 @@ Both are well-maintained, widely-used Go libraries.
 - [ ] Create `internal/config/loader.go` with Load() returning LoadResult
 - [ ] Create `internal/config/config_test.go` with comprehensive tests
 - [ ] Run `make check` to validate
+- [ ] Commit changes for Phase 1 with descriptive message
 
 ### Phase 2: Naming/Generation Layer
 - [ ] Create `internal/naming/branch.go` with BranchNameGenerator
@@ -616,6 +1116,7 @@ Both are well-maintained, widely-used Go libraries.
 - [ ] Create `internal/naming/worktree.go` with WorktreeNameGenerator
 - [ ] Create `internal/naming/worktree_test.go`
 - [ ] Run `make check` to validate
+- [ ] Commit changes for Phase 2 with descriptive message
 
 ### Phase 3: Command Layer
 - [ ] Add `github.com/spf13/cobra` dependency
@@ -626,12 +1127,14 @@ Both are well-maintained, widely-used Go libraries.
 - [ ] Create `cmd/init_test.go`
 - [ ] Update `main.go` to call cmd.Execute()
 - [ ] Run `make check` to validate
+- [ ] Commit changes for Phase 3 with descriptive message
 
 ### Phase 4: Shell Integration Layer
 - [ ] Create `internal/shell/functions.go` with templates
 - [ ] Create `internal/shell/functions_test.go`
 - [ ] Wire shell generation into cmd/init.go
 - [ ] Run `make check` to validate
+- [ ] Commit changes for Phase 4 with descriptive message
 
 ### Final Integration
 - [ ] End-to-end manual test of `grove create` + shell function
@@ -647,7 +1150,9 @@ These items are explicitly deferred but designed for:
 1. **CLI/Environment Overrides**: Config loading interface supports adding `--config` flag and env var precedence
 2. **Diagnostics Command**: `grove doctor` or `grove config show` to display resolved config and source paths (LoadResult.SourcePaths enables this)
 3. **Dry-Run Mode**: `--dry-run` flag to show what would be created without executing
-4. **Base Ref Flag**: `--base` flag to create branch from specific ref
+4. **Base Ref Flag**: `--base` flag to specify a different base commit/branch (default: HEAD)
+5. **Version Command**: `grove version` to display the current version, build info, etc.
+6. **Shell Completion**: `grove completion bash|zsh|fish` to generate shell completion scripts using Cobra's built-in completion generator
 
 ---
 
@@ -657,3 +1162,9 @@ Run `make check` after each phase to verify:
 1. All tests pass (`go test ./...`)
 2. Linting passes (`golangci-lint run ./...`)
 3. Build succeeds (`go build`)
+
+When writing tests:
+- Use table-driven tests for functions with multiple input/output combinations
+- Test helpers should call `t.Helper()` for better error reporting
+- Use `wantErr bool` pattern for error testing
+- Create interface test doubles rather than mocking concrete types
