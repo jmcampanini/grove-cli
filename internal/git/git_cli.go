@@ -450,6 +450,7 @@ taggedon %(taggerdate:iso-strict)
 message %(contents:subject)
 committedby %(*committername)
 committedon %(*committerdate:iso-strict)
+committerdate %(committerdate:iso-strict)
 commitsubject %(*subject)
 `
 	output, err := g.executeGitCommand("for-each-ref", "--format="+format, "refs/tags/")
@@ -486,46 +487,36 @@ func parseTagsFromFormat(output string) []Tag {
 	return tags
 }
 
-func parseTagBlock(lines []string) Tag {
-	var (
-		commitSubject string
-		committedBy   string
-		committedOn   time.Time
-		derefSHA      string
-		message       string
-		name          string
-		objectSHA     string
-		objectType    string
-		taggedOn      time.Time
-		taggerEmail   string
-		taggerName    string
-	)
-
+// parseTagFields extracts key-value pairs from lines in "key value" format.
+func parseTagFields(lines []string) map[string]string {
+	fields := make(map[string]string, len(lines))
 	for _, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "name "):
-			name = strings.TrimPrefix(line, "name ")
-		case strings.HasPrefix(line, "objecttype "):
-			objectType = strings.TrimPrefix(line, "objecttype ")
-		case strings.HasPrefix(line, "objectsha "):
-			objectSHA = strings.TrimPrefix(line, "objectsha ")
-		case strings.HasPrefix(line, "derefsha "):
-			derefSHA = strings.TrimPrefix(line, "derefsha ")
-		case strings.HasPrefix(line, "taggername "):
-			taggerName = strings.TrimPrefix(line, "taggername ")
-		case strings.HasPrefix(line, "taggeremail "):
-			taggerEmail = strings.TrimPrefix(line, "taggeremail ")
-		case strings.HasPrefix(line, "taggedon "):
-			taggedOn = parseISO8601Date(strings.TrimPrefix(line, "taggedon "))
-		case strings.HasPrefix(line, "message "):
-			message = strings.TrimPrefix(line, "message ")
-		case strings.HasPrefix(line, "committedby "):
-			committedBy = strings.TrimPrefix(line, "committedby ")
-		case strings.HasPrefix(line, "committedon "):
-			committedOn = parseISO8601Date(strings.TrimPrefix(line, "committedon "))
-		case strings.HasPrefix(line, "commitsubject "):
-			commitSubject = strings.TrimPrefix(line, "commitsubject ")
+		if idx := strings.Index(line, " "); idx != -1 {
+			fields[line[:idx]] = line[idx+1:]
 		}
+	}
+	return fields
+}
+
+func parseTagBlock(lines []string) Tag {
+	fields := parseTagFields(lines)
+
+	name := fields["name"]
+	objectType := fields["objecttype"]
+	objectSHA := fields["objectsha"]
+	derefSHA := fields["derefsha"]
+	taggerName := fields["taggername"]
+	taggerEmail := fields["taggeremail"]
+	taggedOn := parseISO8601Date(fields["taggedon"])
+	message := fields["message"]
+	committedBy := fields["committedby"]
+	committedOn := parseISO8601Date(fields["committedon"])
+	committerDate := parseISO8601Date(fields["committerdate"])
+	commitSubject := fields["commitsubject"]
+
+	// Fallback: use committerDate if committedOn is zero (lightweight tags)
+	if committedOn.IsZero() && !committerDate.IsZero() {
+		committedOn = committerDate
 	}
 
 	// Determine the actual commit SHA and metadata

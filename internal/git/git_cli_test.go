@@ -631,6 +631,7 @@ func TestParseTagBlock(t *testing.T) {
 				"message Release version 1.0.0",
 				"committedby Jane Smith",
 				"committedon 2024-01-14T09:00:00Z",
+				"committerdate ",
 				"commitsubject Initial commit",
 			},
 			want: NewTag(
@@ -655,11 +656,12 @@ func TestParseTagBlock(t *testing.T) {
 				"message ",
 				"committedby ",
 				"committedon ",
+				"committerdate 2024-01-14T09:00:00Z",
 				"commitsubject ",
 			},
 			want: NewTag(
 				"v0.1.0",
-				NewCommit("def5678", "", time.Time{}, ""),
+				NewCommit("def5678", "", time.Date(2024, 1, 14, 9, 0, 0, 0, time.UTC), ""),
 				"",
 				"",
 				"",
@@ -679,6 +681,7 @@ func TestParseTagBlock(t *testing.T) {
 				"message Major release",
 				"committedby Bob",
 				"committedon 2024-05-30T08:00:00Z",
+				"committerdate ",
 				"commitsubject Big feature",
 			},
 			want: NewTag(
@@ -708,6 +711,7 @@ func TestParseTagBlock(t *testing.T) {
 			assert.Equal(t, tt.want.Commit().SHA, got.Commit().SHA)
 			assert.Equal(t, tt.want.Commit().Subject, got.Commit().Subject)
 			assert.Equal(t, tt.want.Commit().CommittedBy, got.Commit().CommittedBy)
+			assert.True(t, tt.want.Commit().CommittedOn.Equal(got.Commit().CommittedOn), "committed on time mismatch")
 		})
 	}
 }
