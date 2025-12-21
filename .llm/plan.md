@@ -1,5 +1,9 @@
 # Implementation Plan: Grove CLI - Layered Architecture with Practical Milestones
 
+> **Important Notes:**
+> - **Best Practices:** Read `.llm/best-practices.md` before implementing each phase for Go and Cobra conventions.
+> - **Code Blocks:** All code blocks in this document are **illustrative examples**, not hard definitions. The actual implementation may vary based on context and should follow the intent described in prose.
+
 ## Overview
 
 This plan implements the grove-cli `create` command using a layered architecture that enables independent testability while maintaining practical delivery milestones. Each phase produces working, testable code that can be validated before proceeding.
@@ -27,6 +31,48 @@ Example directory structure:
 ├── wt-add-user-auth/        <- Additional Worktree
 └── wt-fix-login-bug/        <- Additional Worktree
 ```
+
+### Path Resolution
+
+This section clarifies how key paths are derived and how errors are handled.
+
+**Deriving Workspace Root:**
+```go
+// Get the main worktree path using the existing Git interface
+mainWorktreePath, err := git.GetMainWorktreePath()
+if err != nil {
+    return fmt.Errorf("failed to get main worktree path: %w", err)
+}
+
+// Workspace root is the parent directory of the main worktree
+workspaceRoot := filepath.Dir(mainWorktreePath)
+```
+
+**Handling "Not in a Git Repository":**
+
+The `GetWorktreeRoot()` method returns `("", nil)` when not in a git repository. The create command must check this early and fail with a clear error:
+
+```go
+func runCreate(cmd *cobra.Command, args []string) error {
+    // Check we're in a git repository FIRST (before config loading)
+    worktreeRoot, err := git.GetWorktreeRoot()
+    if err != nil {
+        return fmt.Errorf("git error: %w", err)
+    }
+    if worktreeRoot == "" {
+        return errors.New("grove must be run inside a git repository")
+    }
+
+    // Now safe to proceed with config loading and worktree creation...
+}
+```
+
+**Order of Path Resolution:**
+1. Validate we're in a git repo (`GetWorktreeRoot() != ""`)
+2. Get current worktree root for config discovery (`GetWorktreeRoot()`)
+3. Get main worktree path for workspace root derivation (`GetMainWorktreePath()`)
+4. Derive workspace root as `filepath.Dir(mainWorktreePath)`
+5. Compute new worktree path as `filepath.Join(workspaceRoot, worktreeName)`
 
 **Development Workflow:**
 - Commit code after completing each major step within a phase
@@ -113,6 +159,23 @@ type SlugifyConfig struct {
 type WorktreeConfig struct {
     NewPrefix         string   `toml:"new_prefix"`         // e.g., "wt-"
     StripBranchPrefix []string `toml:"strip_branch_prefix"` // e.g., ["feature/"]
+    // Note: Only the first matching prefix is stripped (checked in list order)
+    // e.g., branch "feature/add-auth" with ["fix/", "feature/"] -> "add-auth"
+}
+
+// Validate checks that all config values are valid
+// Returns an error describing the first invalid value found
+func (c Config) Validate() error {
+    if c.Slugify.MaxLength < 0 {
+        return errors.New("slugify.max_length cannot be negative")
+    }
+    if c.Slugify.HashLength < 0 {
+        return errors.New("slugify.hash_length cannot be negative")
+    }
+    if c.Git.Timeout < 0 {
+        return errors.New("git.timeout cannot be negative")
+    }
+    return nil
 }
 ```
 
@@ -201,22 +264,19 @@ type Loader struct {
 
 // FileSystem abstracts file system operations for testability
 type FileSystem interface {
-    // ReadFile reads the entire contents of a file
-    ReadFile(path string) ([]byte, error)
-
-    // Stat returns file info, used to check if path exists and is a file
-    Stat(path string) (os.FileInfo, error)
+    // Exists returns true if the path exists and is a file (not a directory)
+    Exists(path string) bool
 }
 
 // OSFileSystem implements FileSystem using the real OS
 type OSFileSystem struct{}
 
-func (OSFileSystem) ReadFile(path string) ([]byte, error) {
-    return os.ReadFile(path)
-}
-
-func (OSFileSystem) Stat(path string) (os.FileInfo, error) {
-    return os.Stat(path)
+func (OSFileSystem) Exists(path string) bool {
+    info, err := os.Stat(path)
+    if err != nil {
+        return false
+    }
+    return !info.IsDir()
 }
 
 // Load reads and merges all config files in priority order
@@ -225,8 +285,11 @@ func (l *Loader) Load(paths []string) (LoadResult, error)
 ```
 
 **Why use an interface:**
-- Enables testing config loading without real files
-- Can use in-memory file system implementations in tests
+- Enables testing file existence checks without real files
+- The `Exists` method can be mocked to simulate missing files, permission errors, etc.
+
+**Note on TOML Loading:**
+Since we use `toml.DecodeFile` directly (for simplicity), config loading tests that verify TOML parsing will need temporary files. Use `t.TempDir()` for these tests. The `FileSystem` interface is primarily for controlling which files are "seen" during discovery.
 
 Note: `LoadResult.SourcePaths` aids debugging by showing which config files were applied.
 
@@ -282,6 +345,11 @@ func (l *Loader) Load(paths []string) (LoadResult, error) {
         sourcePaths = append(sourcePaths, path)
     }
 
+    // Validate the merged config
+    if err := cfg.Validate(); err != nil {
+        return LoadResult{}, fmt.Errorf("invalid config: %w", err)
+    }
+
     return LoadResult{
         Config:      cfg,
         SourcePaths: sourcePaths,
@@ -322,6 +390,7 @@ func (l *Loader) Load(paths []string) (LoadResult, error) {
 Tests following existing patterns from `slugify_test.go`:
 
 - `TestDefaultConfig` - verify defaults are sensible
+- `TestConfig_Validate` - verify validation catches invalid values (table-driven with negative MaxLength, negative HashLength, negative Timeout, and valid config cases)
 - `TestConfigPaths` - verify path ordering (use table-driven tests for various path scenarios)
 - `TestLoad_SingleFile` - parse various TOML configs (use table-driven tests for different config files)
 - `TestLoad_SequentialOverlay` - verify sequential decoding overlays values correctly (use table-driven tests with multiple config files to verify that higher priority files overwrite lower priority files)
@@ -495,10 +564,17 @@ function (grc) can handle passing arbitrary phrases by quoting the arguments.`,
 **Output Behavior:**
 - **stdout**: Only the worktree directory path (e.g., `/path/to/workspace/wt-add-user-auth`)
   - This allows clean integration with shell scripts: `cd $(grove create "...")`
+  - Use `fmt.Fprintln(cmd.OutOrStdout(), path)` for the final path output
 - **stderr**: All other output including:
   - Error messages
   - Warnings (e.g., unknown config keys)
   - Informational messages (if any)
+
+**Logger Configuration (charmbracelet/log):**
+- Configure the logger to write to stderr: `log.SetOutput(os.Stderr)`
+- This ensures all log output (info, warn, error) goes to stderr
+- Cobra's error handling also writes to stderr by default
+- Never use `fmt.Println()` for logging - use the logger or `cmd.ErrOrStderr()`
 
 This separation ensures the create command can be used in pipelines and scripts without parsing issues.
 
@@ -520,9 +596,18 @@ func runCreate(cmd *cobra.Command, args []string) error {
         return errors.New("phrase cannot be empty")
     }
 
-    // 2. Load config (with source path tracking for error messages)
+    // 2. Load config
+    //    Obtain paths for ConfigPaths():
+    //    - cwd: os.Getwd()
+    //    - worktreeRoot: git.GetWorktreeRoot() from internal/git package
+    //    - gitRoot: git.GetMainWorktreePath() from internal/git package (main worktree)
+    //    - homeDir: os.UserHomeDir()
+    //    Then call config.ConfigPaths(cwd, worktreeRoot, gitRoot, homeDir)
+    //    and loader.Load(paths)
     // 3. Validate we're in a git repository
+    //    Use: git.GetWorktreeRoot() - returns "" if not in a repo
     // 4. Generate branch name (slugify the phrase)
+    //    Use: naming.BranchNameGenerator.Generate()
     // 5. Validate slug is not empty - error out with helpful message
     //    If slug is empty:
     //      Error: phrase '!!!' produces an empty branch name after slugification
@@ -532,6 +617,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
     //        grove create "add user auth"
     //        grove create "fix-bug-123"
     // 6. Check if branch already exists - error out with helpful message
+    //    Use: git.BranchExists(branchName, false)
     //    If branch exists:
     //      Error: branch 'feature/add-user-auth' already exists
     //
@@ -540,8 +626,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
     //
     //      Or choose a different name for your new branch.
     // 7. Generate worktree name
-    // 8. Determine worktree path (workspace root + worktree name). The workspace root is the parent directory of the main worktree.
+    //    Use: naming.WorktreeNameGenerator.Generate()
+    // 8. Determine worktree path (workspace root + worktree name)
+    //    Use: git.GetMainWorktreePath() then filepath.Dir() for workspace root
+    //    Then: filepath.Join(workspaceRoot, worktreeName)
     // 9. Check if worktree path already exists - error out with helpful message
+    //    Use: os.Stat() to check if path exists
     //    If path exists:
     //      Error: worktree path '/path/to/workspace/wt-add-user-auth' already exists
     //
@@ -550,10 +640,22 @@ func runCreate(cmd *cobra.Command, args []string) error {
     //
     //      Or choose a different name for your new branch.
     // 10. Create branch and worktree from current HEAD
+    //     Use: git.CreateWorktreeForNewBranchFromRef(branchName, worktreePath, "")
+    //     Note: empty baseRef means use HEAD
+    //     Note: This is an atomic operation - creates both branch and worktree together
+    //     If it fails, neither should exist (git handles this internally)
     // 11. Output ONLY the worktree path to stdout (for shell integration)
     //     All other messages go to stderr
     return nil
 }
+
+// Failure Handling Policy:
+// - No automatic rollback on partial failure
+// - If CreateWorktreeForNewBranchFromRef fails, the error message from git is surfaced
+// - The git layer's atomic operation means branch+worktree are created together
+// - If a truly partial state occurs (unlikely), show cleanup instructions:
+//   "Branch 'feature/x' may have been created. To cleanup: git branch -d feature/x"
+// - User decides whether to retry, cleanup, or investigate
 ```
 
 **Implementation Notes:**
@@ -636,7 +738,7 @@ func main() {
 
 Test approach:
 - Use Cobra's testing utilities
-- Mock git interface for create command (use interface test doubles)
+- For unit testing create command, extend `internal/git` package with an interface if not already present, enabling test doubles
 - Capture stdout for init command output verification
 - Integration tests with temporary git repos (following patterns from `git_cli_integration_test.go`)
 - Use table-driven tests where applicable for testing various command-line argument combinations
@@ -878,167 +980,6 @@ grove-cli/
 
 ---
 
-## Go Best Practices
-
-This section outlines Go best practices based on Effective Go and the Google Go Style Guide that should be followed throughout the implementation.
-
-### Error Handling
-
-1. **Idiomatic Error Checking:**
-   - Use the pattern: `if err := doSomething(); err != nil { ... }`
-   - This keeps the error handling close to the operation and limits variable scope
-
-2. **Error Types:**
-   - Return the `error` interface type, not concrete error types
-   - Avoid returning specific types like `*os.PathError` in function signatures
-   - This allows implementation flexibility and better abstraction
-
-3. **Success Returns:**
-   - Return `nil` explicitly for success cases, not a typed nil pointer
-   - Example: `return nil` instead of `return (*MyError)(nil)`
-
-### Testing
-
-1. **Table-Driven Tests:**
-   - Use table-driven tests for functions with multiple input/output combinations
-   - This pattern is especially useful for naming generators, config merging, and validation logic
-   - Example structure:
-     ```go
-     tests := []struct {
-         name    string
-         input   string
-         want    string
-         wantErr bool
-     }{
-         {name: "simple case", input: "foo", want: "bar", wantErr: false},
-         // ... more cases
-     }
-     for _, tt := range tests {
-         t.Run(tt.name, func(t *testing.T) {
-             got, err := functionUnderTest(tt.input)
-             if (err != nil) != tt.wantErr {
-                 t.Errorf("unexpected error state")
-             }
-             if got != tt.want {
-                 t.Errorf("got %v, want %v", got, tt.want)
-             }
-         })
-     }
-     ```
-
-2. **Test Helpers:**
-   - Test helpers should call `t.Helper()` to improve error reporting
-   - This ensures test failures point to the actual test case, not the helper
-
-3. **Error Testing Pattern:**
-   - Use `wantErr bool` field pattern for testing error presence
-   - Don't compare error strings; check for error existence or use errors.Is/errors.As
-
-4. **Test Doubles:**
-   - Create fake implementations of interfaces for testing (test doubles)
-   - Example: FileSystem interface in config loader enables testing without real files
-
-5. **Goroutine Testing:**
-   - Don't use `t.Fatal` in goroutines - use `t.Errorf` instead
-   - `t.Fatal` calls runtime.Goexit which only stops the current goroutine
-
-### Interfaces
-
-1. **Interface Location:**
-   - Define interfaces where they are used (consumer side), not where implemented
-   - This is the "interface segregation" principle
-   - Example: `Loader` defines the `FileSystem` interface it needs
-
-2. **Testability:**
-   - Use interface types for dependencies to enable testability
-   - Allows injecting test doubles without modifying production code
-
----
-
-## Cobra CLI Best Practices
-
-This section outlines Cobra CLI best practices that should be followed throughout the command layer implementation (Phase 3).
-
-### Command Design
-
-1. **Use `RunE` instead of `Run`:**
-   - Always use `RunE` to return errors from command execution
-   - This allows proper error handling by the caller
-   - Cobra automatically displays errors with "Error:" prefix
-   - Example:
-     ```go
-     RunE: func(cmd *cobra.Command, args []string) error {
-         if err := doSomething(); err != nil {
-             return fmt.Errorf("failed to do something: %w", err)
-         }
-         return nil
-     }
-     ```
-
-2. **Argument Validation:**
-   - Use built-in validators in the `Args` field:
-     - `cobra.ExactArgs(n)` - require exactly n arguments
-     - `cobra.MinimumNArgs(n)` - require at least n arguments
-     - `cobra.MaximumNArgs(n)` - require at most n arguments
-     - `cobra.RangeArgs(min, max)` - require between min and max arguments
-     - `cobra.MatchAll(v1, v2)` - combine multiple validators
-   - Custom `Args` function for complex validation:
-     ```go
-     Args: func(cmd *cobra.Command, args []string) error {
-         if len(args) < 1 {
-             return errors.New("requires a phrase argument")
-         }
-         if strings.TrimSpace(args[0]) == "" {
-             return errors.New("phrase cannot be empty")
-         }
-         return nil
-     }
-     ```
-
-3. **Command Structure:**
-   - Root command defines the application and adds subcommands via `AddCommand()`
-   - Each subcommand handles a specific action
-   - Group related commands for better help output using command annotations
-   - Keep command logic in `RunE` functions; extract complex logic to internal packages
-
-4. **PreRunE/PostRunE Hooks:**
-   - Use for setup (loading config) and cleanup operations
-   - `PersistentPreRunE` is inherited by all subcommands
-   - Example:
-     ```go
-     PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-         // Load config once for all commands
-         cfg, err := config.Load()
-         if err != nil {
-             return fmt.Errorf("failed to load config: %w", err)
-         }
-         cmd.SetContext(context.WithValue(cmd.Context(), "config", cfg))
-         return nil
-     }
-     ```
-
-5. **Shell Completions:**
-   - Define `ValidArgs` for simple static completions
-   - Use `ValidArgsFunction` for dynamic completions (file paths, git branches, etc.)
-   - Enable completion command generation:
-     ```go
-     ValidArgs: []string{"fish", "zsh", "bash"},
-     ```
-   - Note: Shell completion support will be added in future iterations
-
-6. **Error Messages:**
-   - Errors returned from `RunE` are automatically displayed with "Error:" prefix
-   - Include context in error messages using `fmt.Errorf` with `%w`
-   - Provide actionable error messages that suggest solutions
-   - Example: `return fmt.Errorf("branch %q already exists: use --force to override", branchName)`
-
-7. **Command Help:**
-   - Use `Short` for one-line description in command list
-   - Use `Long` for detailed usage in `command --help`
-   - Provide examples in `Long` using the `Example:` section format
-
----
-
 ## External Dependencies
 
 | Package | Purpose | Version |
@@ -1061,6 +1002,7 @@ Both are well-maintained, widely-used Go libraries.
 | Worktree path already exists | Check path before creation; error with: "Error: worktree path '/path/to/workspace/wt-add-user-auth' already exists\n\nTo remove the existing worktree:\n  git worktree remove wt-add-user-auth\n\nOr choose a different name for your new branch." |
 | Main worktree path discovery fails | Clear error with troubleshooting steps |
 | Git command execution fails | Surface git's error message with context |
+| Branch created but worktree fails | Don't auto-delete branch; show: "Branch 'feature/x' was created but worktree failed. To cleanup: git branch -d feature/x" |
 
 ### Config Resolution Failures
 
@@ -1153,6 +1095,8 @@ These items are explicitly deferred but designed for:
 4. **Base Ref Flag**: `--base` flag to specify a different base commit/branch (default: HEAD)
 5. **Version Command**: `grove version` to display the current version, build info, etc.
 6. **Shell Completion**: `grove completion bash|zsh|fish` to generate shell completion scripts using Cobra's built-in completion generator
+7. **Verbose Flag**: `--verbose` or `-v` flag to show which config files were loaded (uses LoadResult.SourcePaths)
+8. **Shell Script Linting**: Add shellcheck validation for embedded shell scripts (make lint-shell target)
 
 ---
 
