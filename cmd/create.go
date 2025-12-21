@@ -76,6 +76,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 	cfg := loadResult.Config
 
+	// recreate the git client using the config timeout
+	gitClient = git.New(false, cwd, cfg.Git.Timeout)
+
 	branchGen := naming.NewBranchNameGenerator(cfg.Branch, cfg.Slugify)
 	branchName := branchGen.Generate(phrase)
 
@@ -99,8 +102,11 @@ Examples:
 	worktreeGen := naming.NewWorktreeNameGenerator(cfg.Worktree, cfg.Slugify)
 	worktreeName := worktreeGen.Generate(branchName)
 
-	workspaceRoot := filepath.Dir(mainWorktreePath)
-	worktreePath := filepath.Join(workspaceRoot, worktreeName)
+	workspacePath, err := gitClient.GetWorkspacePath()
+	if err != nil {
+		return fmt.Errorf("failed to get workspace path: %w", err)
+	}
+	worktreePath := filepath.Join(workspacePath, worktreeName)
 
 	if _, err := os.Stat(worktreePath); err == nil {
 		return fmt.Errorf("worktree path %q already exists; to remove it: git worktree remove %s", worktreePath, worktreeName)

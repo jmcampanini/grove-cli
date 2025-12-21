@@ -1,5 +1,6 @@
 function grc --description "Grove create - create branch and worktree"
-    set -l output (grove create "$argv")
+    set -l phrase (string join " " -- $argv)
+    set -l output (grove create "$phrase")
     if test $status -eq 0
         if command -q z
             z $output
