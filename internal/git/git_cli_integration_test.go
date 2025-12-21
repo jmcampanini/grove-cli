@@ -191,6 +191,71 @@ func TestGetMainWorktreePath_Integration_FromLinkedWorktree(t *testing.T) {
 }
 
 // =============================================================================
+// GetWorkspacePath tests
+// =============================================================================
+
+func TestGetWorkspacePath_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	repo := newTestRepo(t)
+	repo.commit("initial commit")
+
+	workspacePath, err := repo.Git.GetWorkspacePath()
+
+	require.NoError(t, err)
+	// Workspace path is the parent of the main worktree
+	// Compare resolved paths to handle symlinks (e.g., /var -> /private/var on macOS)
+	assert.Equal(t, filepath.Dir(repo.path()), resolvePath(t, workspacePath))
+}
+
+func TestGetWorkspacePath_Integration_FromLinkedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	repo := newTestRepo(t)
+	repo.commit("initial commit")
+	repo.createBranch("feature")
+
+	// Create a linked worktree
+	worktreePath := filepath.Join(t.TempDir(), "feature-worktree")
+	repo.createWorktree(worktreePath, "feature")
+
+	// Create GitCli pointing to the linked worktree
+	linkedGit := New(false, worktreePath, testTimeout).(*GitCli)
+
+	workspacePath, err := linkedGit.GetWorkspacePath()
+
+	require.NoError(t, err)
+	// Workspace path should still be the parent of the main worktree
+	// Compare resolved paths to handle symlinks (e.g., /var -> /private/var on macOS)
+	assert.Equal(t, filepath.Dir(repo.path()), resolvePath(t, workspacePath))
+}
+
+func TestGetWorkspacePath_Integration_FromSubdirectory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	repo := newTestRepo(t)
+	repo.commit("initial commit")
+
+	// Create a subdirectory and use a GitCli pointing to it
+	subdir := filepath.Join(repo.path(), "subdir", "nested")
+	require.NoError(t, os.MkdirAll(subdir, 0755))
+
+	subdirGit := New(false, subdir, testTimeout).(*GitCli)
+	workspacePath, err := subdirGit.GetWorkspacePath()
+
+	require.NoError(t, err)
+	// Workspace path should be the parent of the main worktree
+	// Compare resolved paths to handle symlinks (e.g., /var -> /private/var on macOS)
+	assert.Equal(t, filepath.Dir(repo.path()), resolvePath(t, workspacePath))
+}
+
+// =============================================================================
 // ListLocalBranches tests
 // =============================================================================
 
