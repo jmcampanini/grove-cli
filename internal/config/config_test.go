@@ -88,6 +88,38 @@ func TestConfig_Validate(t *testing.T) {
 			},
 			wantErr: "",
 		},
+		{
+			name: "hash length equals max length minus 2 is valid",
+			modify: func(c *Config) {
+				c.Slugify.MaxLength = 10
+				c.Slugify.HashLength = 8
+			},
+			wantErr: "",
+		},
+		{
+			name: "hash length greater than max length minus 2 is invalid",
+			modify: func(c *Config) {
+				c.Slugify.MaxLength = 10
+				c.Slugify.HashLength = 9
+			},
+			wantErr: "slugify.hash_length must be at least 2 less than slugify.max_length",
+		},
+		{
+			name: "hash length equals max length is invalid",
+			modify: func(c *Config) {
+				c.Slugify.MaxLength = 10
+				c.Slugify.HashLength = 10
+			},
+			wantErr: "slugify.hash_length must be at least 2 less than slugify.max_length",
+		},
+		{
+			name: "hash length greater than max length is invalid",
+			modify: func(c *Config) {
+				c.Slugify.MaxLength = 5
+				c.Slugify.HashLength = 10
+			},
+			wantErr: "slugify.hash_length must be at least 2 less than slugify.max_length",
+		},
 	}
 
 	for _, tt := range tests {

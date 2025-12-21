@@ -109,6 +109,14 @@ func (g *GitCli) GetMainWorktreePath() (string, error) {
 	return mainWorktree, nil
 }
 
+func (g *GitCli) GetWorkspacePath() (string, error) {
+	mainWorktreePath, err := g.GetMainWorktreePath()
+	if err != nil {
+		return "", fmt.Errorf("failed to get main worktree path: %w", err)
+	}
+	return filepath.Dir(mainWorktreePath), nil
+}
+
 func (g *GitCli) GetWorktreeRoot() (string, error) {
 	output, err := g.executeGitCommand("rev-parse", "--show-toplevel")
 	if err != nil {

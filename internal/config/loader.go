@@ -34,12 +34,16 @@ func (OSFileSystem) Exists(path string) bool {
 
 // Loader handles configuration loading and merging.
 type Loader struct {
-	fs FileSystem
+	fs  FileSystem
+	log *log.Logger
 }
 
 // NewLoader creates a new Loader with the given FileSystem.
 func NewLoader(fs FileSystem) *Loader {
-	return &Loader{fs: fs}
+	return &Loader{
+		fs:  fs,
+		log: log.Default().WithPrefix("config"),
+	}
 }
 
 // NewDefaultLoader creates a new Loader that uses the real OS file system.
@@ -65,7 +69,7 @@ func (l *Loader) Load(paths []string) (LoadResult, error) {
 		}
 
 		if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
-			log.Warn("unknown config keys", "path", path, "keys", undecoded)
+			l.log.Warn("unknown config keys", "path", path, "keys", undecoded)
 		}
 
 		sourcePaths = append(sourcePaths, path)

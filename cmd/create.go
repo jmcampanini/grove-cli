@@ -48,9 +48,14 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get current directory: %w", err)
 	}
 
-	tempGit := git.New(false, cwd, config.DefaultConfig().Git.Timeout)
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get user home directory: %w", err)
+	}
 
-	worktreeRoot, err := tempGit.GetWorktreeRoot()
+	gitClient := git.New(false, cwd, config.DefaultConfig().Git.Timeout)
+
+	worktreeRoot, err := gitClient.GetWorktreeRoot()
 	if err != nil {
 		return fmt.Errorf("git error: %w", err)
 	}
@@ -58,12 +63,10 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return errors.New("grove must be run inside a git repository")
 	}
 
-	mainWorktreePath, err := tempGit.GetMainWorktreePath()
+	mainWorktreePath, err := gitClient.GetMainWorktreePath()
 	if err != nil {
 		return fmt.Errorf("failed to get main worktree path: %w", err)
 	}
-
-	homeDir, _ := os.UserHomeDir()
 
 	configPaths := config.ConfigPaths(cwd, worktreeRoot, mainWorktreePath, homeDir)
 	loader := config.NewDefaultLoader()
@@ -72,8 +75,6 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 	cfg := loadResult.Config
-
-	gitClient := git.New(false, cwd, cfg.Git.Timeout)
 
 	branchGen := naming.NewBranchNameGenerator(cfg.Branch, cfg.Slugify)
 	branchName := branchGen.Generate(phrase)

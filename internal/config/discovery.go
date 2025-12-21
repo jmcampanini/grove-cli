@@ -35,8 +35,10 @@ func ConfigPaths(cwd, worktreeRoot, gitRoot, homeDir string) []string {
 		}
 	}
 
-	if xdgConfigDir, err := os.UserConfigDir(); err == nil {
+	if xdgConfigDir := os.Getenv("XDG_CONFIG_HOME"); xdgConfigDir != "" {
 		addPath(filepath.Join(xdgConfigDir, "grove"))
+	} else if homeDir != "" {
+		addPath(filepath.Join(homeDir, ".config", "grove"))
 	}
 
 	if gitRoot != "" && homeDir != "" {

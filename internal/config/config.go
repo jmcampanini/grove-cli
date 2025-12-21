@@ -7,10 +7,10 @@ import (
 
 // Config represents the complete grove configuration.
 type Config struct {
-	Branch   BranchConfig
-	Git      GitConfig
-	Slugify  SlugifyConfig
-	Worktree WorktreeConfig
+	Branch   BranchConfig   `toml:"branch"`
+	Git      GitConfig      `toml:"git"`
+	Slugify  SlugifyConfig  `toml:"slugify"`
+	Worktree WorktreeConfig `toml:"worktree"`
 }
 
 // Validate checks that all config values are valid.
@@ -24,6 +24,9 @@ func (c Config) Validate() error {
 	}
 	if c.Slugify.MaxLength < 0 {
 		return errors.New("slugify.max_length cannot be negative")
+	}
+	if c.Slugify.MaxLength > 0 && c.Slugify.HashLength > c.Slugify.MaxLength-2 {
+		return errors.New("slugify.hash_length must be at least 2 less than slugify.max_length")
 	}
 	return nil
 }
