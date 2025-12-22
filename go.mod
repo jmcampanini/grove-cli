@@ -3,7 +3,7 @@ module github.com/jmcampanini/grove-cli
 go 1.25.5
 
 require (
-	github.com/BurntSushi/toml v1.3.2
+	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/log v0.4.2
 	github.com/spf13/cobra v1.8.1
 	github.com/stretchr/testify v1.11.1
