@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestWorktreeNameGenerator_Generate(t *testing.T) {
+func TestWorktreeNamer_Generate(t *testing.T) {
 	tests := []struct {
 		name        string
 		worktreeCfg config.WorktreeConfig
@@ -149,14 +149,14 @@ func TestWorktreeNameGenerator_Generate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gen := NewWorktreeNameGenerator(tt.worktreeCfg, tt.slugifyCfg)
-			got := gen.Generate(tt.branchName)
+			namer := NewWorktreeNamer(tt.worktreeCfg, tt.slugifyCfg)
+			got := namer.Generate(tt.branchName)
 			assert.Equal(t, tt.want, got)
 		})
 	}
 }
 
-func TestNewWorktreeNameGenerator(t *testing.T) {
+func TestNewWorktreeNamer(t *testing.T) {
 	worktreeCfg := config.WorktreeConfig{
 		NewPrefix:         "test-",
 		StripBranchPrefix: []string{"a/", "b/"},
@@ -170,11 +170,85 @@ func TestNewWorktreeNameGenerator(t *testing.T) {
 		TrimDashes:         false,
 	}
 
-	gen := NewWorktreeNameGenerator(worktreeCfg, slugCfg)
+	namer := NewWorktreeNamer(worktreeCfg, slugCfg)
 
-	assert.Equal(t, "test-", gen.prefix)
-	assert.Equal(t, []string{"a/", "b/"}, gen.stripBranchPrefix)
-	assert.Equal(t, 8, gen.slugifyOpts.HashLength)
-	assert.False(t, gen.slugifyOpts.Lowercase)
-	assert.Equal(t, 75, gen.slugifyOpts.MaxLength)
+	assert.Equal(t, "test-", namer.prefix)
+	assert.Equal(t, []string{"a/", "b/"}, namer.stripBranchPrefix)
+	assert.Equal(t, 8, namer.slugifyOpts.HashLength)
+	assert.False(t, namer.slugifyOpts.Lowercase)
+	assert.Equal(t, 75, namer.slugifyOpts.MaxLength)
+}
+
+func TestWorktreeNamer_ExtractFromAbsolutePath(t *testing.T) {
+	tests := []struct {
+		name        string
+		worktreeCfg config.WorktreeConfig
+		absPath     string
+		want        string
+	}{
+		{
+			name: "standard prefix stripping",
+			worktreeCfg: config.WorktreeConfig{
+				NewPrefix: "wt-",
+			},
+			absPath: "/workspace/wt-add-auth",
+			want:    "add-auth",
+		},
+		{
+			name: "no prefix match",
+			worktreeCfg: config.WorktreeConfig{
+				NewPrefix: "wt-",
+			},
+			absPath: "/workspace/main",
+			want:    "main",
+		},
+		{
+			name: "empty prefix config",
+			worktreeCfg: config.WorktreeConfig{
+				NewPrefix: "",
+			},
+			absPath: "/workspace/add-auth",
+			want:    "add-auth",
+		},
+		{
+			name: "empty input",
+			worktreeCfg: config.WorktreeConfig{
+				NewPrefix: "wt-",
+			},
+			absPath: "",
+			want:    ".",
+		},
+		{
+			name: "deep nested path",
+			worktreeCfg: config.WorktreeConfig{
+				NewPrefix: "wt-",
+			},
+			absPath: "/deep/nested/path/wt-feature",
+			want:    "feature",
+		},
+		{
+			name: "partial prefix match not at start",
+			worktreeCfg: config.WorktreeConfig{
+				NewPrefix: "wt-",
+			},
+			absPath: "/workspace/foo-wt-bar",
+			want:    "foo-wt-bar",
+		},
+		{
+			name: "different prefix",
+			worktreeCfg: config.WorktreeConfig{
+				NewPrefix: "work-",
+			},
+			absPath: "/workspace/work-feature",
+			want:    "feature",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			namer := NewWorktreeNamer(tt.worktreeCfg, defaultSlugifyConfig())
+			got := namer.ExtractFromAbsolutePath(tt.absPath)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

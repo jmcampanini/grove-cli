@@ -5,13 +5,22 @@ import (
 )
 
 //go:embed scripts/grc.fish
-var fishScript string
+var grcFishScript string
 
 //go:embed scripts/grc.bash
-var bashScript string
+var grcBashScript string
 
 //go:embed scripts/grc.zsh
-var zshScript string
+var grcZshScript string
+
+//go:embed scripts/grs.fish
+var grsFishScript string
+
+//go:embed scripts/grs.bash
+var grsBashScript string
+
+//go:embed scripts/grs.zsh
+var grsZshScript string
 
 // FunctionGenerator generates shell functions.
 type FunctionGenerator struct{}
@@ -21,17 +30,17 @@ func NewFunctionGenerator() *FunctionGenerator {
 	return &FunctionGenerator{}
 }
 
-// GenerateFish returns the fish shell function.
+// GenerateFish returns all fish shell functions.
 func (g *FunctionGenerator) GenerateFish() string {
-	return fishScript
+	return grcFishScript + "\n" + grsFishScript
 }
 
-// GenerateZsh returns the zsh shell function.
+// GenerateZsh returns all zsh shell functions.
 func (g *FunctionGenerator) GenerateZsh() string {
-	return zshScript
+	return grcZshScript + "\n" + grsZshScript
 }
 
-// GenerateBash returns the bash shell function.
+// GenerateBash returns all bash shell functions.
 func (g *FunctionGenerator) GenerateBash() string {
-	return bashScript
+	return grcBashScript + "\n" + grsBashScript
 }
