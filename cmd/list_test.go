@@ -5,9 +5,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jmcampanini/grove-cli/internal/config"
 	"github.com/jmcampanini/grove-cli/internal/git"
+	"github.com/jmcampanini/grove-cli/internal/naming"
 	"github.com/stretchr/testify/assert"
 )
+
+// testNamer creates a WorktreeNamer with the given prefix for testing.
+func testNamer(prefix string) *naming.WorktreeNamer {
+	return naming.NewWorktreeNamer(
+		config.WorktreeConfig{NewPrefix: prefix},
+		config.SlugifyConfig{},
+	)
+}
 
 func TestGetDisplayName(t *testing.T) {
 	tests := []struct {
@@ -56,7 +66,8 @@ func TestGetDisplayName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := getDisplayName(tt.absPath, tt.wtPrefix)
+			namer := testNamer(tt.wtPrefix)
+			got := getDisplayName(namer, tt.absPath)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -204,7 +215,8 @@ func TestFormatWorktree(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotPath, gotDisplay := formatWorktree(tt.worktree, tt.wtPrefix)
+			namer := testNamer(tt.wtPrefix)
+			gotPath, gotDisplay := formatWorktree(tt.worktree, namer)
 			assert.Equal(t, tt.wantPath, gotPath)
 			assert.Equal(t, tt.wantDisplay, gotDisplay)
 		})
@@ -226,7 +238,8 @@ func TestFormatWorktreeTabSeparation(t *testing.T) {
 		),
 	}
 
-	_, display := formatWorktree(worktree, "wt-")
+	namer := testNamer("wt-")
+	_, display := formatWorktree(worktree, namer)
 
 	// Verify no tabs in display string
 	assert.NotContains(t, display, "\t", "display string should not contain tabs")
