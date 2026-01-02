@@ -39,6 +39,7 @@ type PRQuery struct {
 }
 
 // ToSearchQuery converts the query to a GitHub search string for use with `gh pr list --search`.
+// Date filters are only applied when semantically valid for the given state.
 func (q PRQuery) ToSearchQuery() string {
 	state := q.State
 	if state == "" {
@@ -54,18 +55,16 @@ func (q PRQuery) ToSearchQuery() string {
 		parts = append(parts, "is:pr", "is:open", "draft:true")
 	case PRStateClosed:
 		parts = append(parts, "is:pr", "is:closed", "is:unmerged")
+		if q.ClosedWithinDays > 0 {
+			cutoff := time.Now().AddDate(0, 0, -q.ClosedWithinDays)
+			parts = append(parts, fmt.Sprintf("closed:>=%s", cutoff.Format("2006-01-02")))
+		}
 	case PRStateMerged:
 		parts = append(parts, "is:pr", "is:merged")
-	}
-
-	if q.ClosedWithinDays > 0 {
-		cutoff := time.Now().AddDate(0, 0, -q.ClosedWithinDays)
-		parts = append(parts, fmt.Sprintf("closed:>=%s", cutoff.Format("2006-01-02")))
-	}
-
-	if q.MergedWithinDays > 0 {
-		cutoff := time.Now().AddDate(0, 0, -q.MergedWithinDays)
-		parts = append(parts, fmt.Sprintf("merged:>=%s", cutoff.Format("2006-01-02")))
+		if q.MergedWithinDays > 0 {
+			cutoff := time.Now().AddDate(0, 0, -q.MergedWithinDays)
+			parts = append(parts, fmt.Sprintf("merged:>=%s", cutoff.Format("2006-01-02")))
+		}
 	}
 
 	if q.UpdatedWithinDays > 0 {
@@ -77,33 +76,38 @@ func (q PRQuery) ToSearchQuery() string {
 }
 
 type PullRequest struct {
-	Number       int
-	BranchName   string
-	State        PRState
-	Title        string
-	AuthorLogin  string
-	AuthorName   string // May be empty if user hasn't set display name
+	AuthorLogin  string // May be empty if author's account was deleted
+	AuthorName   string // May be empty if author's account was deleted
 	Body         string
+	BranchName   string
 	CreatedAt    time.Time
+	FilesChanged int
 	LinesAdded   int
 	LinesDeleted int
-	FilesChanged int
+	Number       int
+	State        PRState
+	Title        string
+	UpdatedAt    time.Time
+	URL          string
 }
 
-const prJsonFields = "number,headRefName,state,isDraft,title,author,body,createdAt,additions,deletions,changedFiles"
+//nolint:unused // will be used by gh CLI implementation
+const prJsonFields = "additions,author,body,changedFiles,createdAt,deletions,headRefName,isDraft,number,state,title,updatedAt,url"
 
 func (pr *PullRequest) UnmarshalJSON(data []byte) error {
 	type rawPR struct {
-		Number       int       `json:"number"`
-		HeadRefName  string    `json:"headRefName"`
-		State        string    `json:"state"`
-		IsDraft      bool      `json:"isDraft"`
-		Title        string    `json:"title"`
-		Body         string    `json:"body"`
-		CreatedAt    time.Time `json:"createdAt"`
 		Additions    int       `json:"additions"`
-		Deletions    int       `json:"deletions"`
+		Body         string    `json:"body"`
 		ChangedFiles int       `json:"changedFiles"`
+		CreatedAt    time.Time `json:"createdAt"`
+		Deletions    int       `json:"deletions"`
+		HeadRefName  string    `json:"headRefName"`
+		IsDraft      bool      `json:"isDraft"`
+		Number       int       `json:"number"`
+		State        string    `json:"state"`
+		Title        string    `json:"title"`
+		UpdatedAt    time.Time `json:"updatedAt"`
+		URL          string    `json:"url"`
 		Author       struct {
 			Login string `json:"login"`
 			Name  string `json:"name"`
@@ -114,16 +118,18 @@ func (pr *PullRequest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	pr.Number = raw.Number
-	pr.BranchName = raw.HeadRefName
-	pr.Title = raw.Title
-	pr.Body = raw.Body
-	pr.CreatedAt = raw.CreatedAt
-	pr.LinesAdded = raw.Additions
-	pr.LinesDeleted = raw.Deletions
-	pr.FilesChanged = raw.ChangedFiles
 	pr.AuthorLogin = raw.Author.Login
 	pr.AuthorName = raw.Author.Name
+	pr.Body = raw.Body
+	pr.BranchName = raw.HeadRefName
+	pr.CreatedAt = raw.CreatedAt
+	pr.FilesChanged = raw.ChangedFiles
+	pr.LinesAdded = raw.Additions
+	pr.LinesDeleted = raw.Deletions
+	pr.Number = raw.Number
+	pr.Title = raw.Title
+	pr.UpdatedAt = raw.UpdatedAt
+	pr.URL = raw.URL
 
 	if raw.IsDraft && raw.State == "OPEN" {
 		pr.State = PRStateDraft
