@@ -20,7 +20,7 @@ Add `grove pr list`, `grove pr preview`, `grove pr create` commands and `grp` sh
 ### Phase 1: Config Changes
 
 **Files to modify:**
-- `internal/config/config.go` - Add `PRConfig` struct, add to `Config` struct, add `isValidBranchName()`
+- `internal/config/config.go` - Add `PRConfig` struct, add to `Config` struct
 - `internal/config/defaults.go` - Add PR defaults to `DefaultConfig()`
 
 **defaults.go addition:**
@@ -103,17 +103,13 @@ func NewPRWorktreeNamer(prCfg config.PRConfig, slugCfg config.SlugifyConfig) (*P
     return &PRWorktreeNamer{...}, nil
 }
 
-// isValidBranchName validates git branch name rules in pure Go.
-// Must implement ALL git check-ref-format rules:
+// isValidBranchName validates git branch name with simplified rules.
+// Checks only the most common invalid patterns:
 // - No ".." anywhere
-// - No "~", "^", ":", "?", "*", "[", "\" characters
-// - No "@{" sequence
-// - No leading "-"
-// - No trailing ".", "/" or ".lock"
-// - No consecutive slashes "//"
-// - No path component starting with "."
 // - No control characters (ASCII < 32, DEL)
-// - No spaces
+// - No leading "-"
+// Edge cases not covered here will fail at git worktree creation time
+// with clear git error messages.
 func isValidBranchName(name string) bool
 ```
 
@@ -199,10 +195,10 @@ detection at the cost of potential false positives if unrelated branches happen 
    - `--fzf` flag for fzf-compatible output
    - Default: lipgloss table with columns: **#, Title, Author, Branch, State, Local, Updated**
    - "State" column shows lowercase state: "open", "draft", "closed", "merged" (use `strings.ToLower(string(pr.State))` for display). Lowercase is intentional for visual consistency in tables. Future-proofed for `--state` flag.
-   - **Query**: Use empty `PRQuery{}` which defaults to open PRs. Add comment noting future extension for `--state` flag.
+   - **Query**: Use `PRQuery{State: "open"}` explicitly to lock behavior. Add comment noting future extension for `--state` flag.
    - "Local" column shows ✓ when worktree exists, empty otherwise
    - "Updated" column uses `humanize.Time(pr.UpdatedAt)` from go-humanize
-   - **Sanitization**: Replace tabs and newlines in PR titles with spaces to prevent fzf parsing issues
+   - **Sanitization**: Replace tabs and newlines with spaces in ALL columns going into the fzf TSV (title, branch, author, state) to prevent parsing issues. While git branch names can't contain these characters, author names from GitHub could theoretically contain them.
 
    **Table format:**
    ```
@@ -239,23 +235,33 @@ detection at the cost of potential false positives if unrelated branches happen 
    - **Note**: The original prompt suggested progressive loading (show instant data, then fetch more).
      Sequential API calls are simpler and the latency is acceptable for preview use. This is a deliberate
      simplification. Parallelization can be added in v2 if needed.
-   - Designed for fzf `--preview` usage
-   - **Error handling**: On error, print to stdout (not stderr) so it displays in fzf preview pane, then return nil
+   - **`--fzf` flag**: Changes error handling behavior
+     - Without flag (default): Return errors normally (proper exit code, stderr)
+     - With `--fzf`: Print errors to stdout and return nil (for fzf preview pane)
 
    ```go
+   var fzfMode bool // set via --fzf flag
+
    func runPreview(cmd *cobra.Command, args []string) error {
        prNum := parseNumber(args[0])
 
        pr, err := gh.GetPullRequest(prNum)
        if err != nil {
-           fmt.Printf("Error: %v\n", err)
-           return nil  // nil so Cobra doesn't print to stderr
+           if fzfMode {
+               // Print to stdout so error displays in fzf preview pane
+               fmt.Printf("Error: %v\n", err)
+               return nil
+           }
+           return err
        }
 
        files, err := gh.GetPullRequestFiles(prNum)
        if err != nil {
-           fmt.Printf("Error: %v\n", err)
-           return nil
+           if fzfMode {
+               fmt.Printf("Error: %v\n", err)
+               return nil
+           }
+           return err
        }
 
        fmt.Printf("PR #%d\n", pr.Number)
@@ -268,7 +274,7 @@ detection at the cost of potential false positives if unrelated branches happen 
 
        // Show file list with +/- counts (limit to 30 files)
        const maxFiles = 30
-       fmt.Printf("Files changed (%d):\n", len(files))
+       fmt.Printf("Files changed (%d):\n", pr.FilesChanged)
        displayCount := len(files)
        if displayCount > maxFiles {
            displayCount = maxFiles
@@ -285,10 +291,41 @@ detection at the cost of potential false positives if unrelated branches happen 
    }
    ```
 
-   **Note**: Requires adding `GetPullRequestFiles(num)` to `internal/github/` package.
-   Returns list of `PullRequestFile` structs. **Limitation**: GitHub API returns max 30 files
-   per page; we accept this limit and don't implement pagination. Display is limited to 30
-   with "(and N more files...)" indicator showing actual count from PR metadata.
+   **Note**: Requires adding `GetPullRequestFiles` to `internal/github/` package.
+   **Limitation**: GitHub API returns max 30 files per page; we accept this limit and don't
+   implement pagination. Display is limited to 30 with "(and N more files...)" indicator.
+
+   ```go
+   // Add to internal/github/github.go interface
+   GetPullRequestFiles(prNum int) ([]PullRequestFile, error)
+
+   // Validate checks if gh CLI is available and authenticated.
+   // Returns nil if ready to use, or a descriptive error:
+   // - "gh CLI not found: install from https://cli.github.com"
+   // - "gh CLI not authenticated: run 'gh auth login'"
+   // Note: Does not check if current directory is a GitHub repo.
+   // Non-GitHub repos will fail naturally when gh commands are executed.
+   Validate() error
+   ```
+
+   **Validate() implementation** in `github_cli.go`:
+   ```go
+   func (g *GitHubCli) Validate() error {
+       // Check if gh is installed
+       if _, err := exec.LookPath("gh"); err != nil {
+           return fmt.Errorf("gh CLI not found: install from https://cli.github.com")
+       }
+
+       // Check auth status - gh auth status exits non-zero if not authenticated
+       if _, err := g.executeGhCommand("auth", "status"); err != nil {
+           return fmt.Errorf("gh CLI not authenticated: run 'gh auth login'")
+       }
+
+       return nil
+   }
+   ```
+
+   **Usage in commands**: Call `gh.Validate()` at the start of each pr subcommand before other operations.
 
    ```go
    // Add to internal/github/pull_request.go
@@ -312,27 +349,31 @@ detection at the cost of potential false positives if unrelated branches happen 
    **Flow:**
    1. Fetch PR info via `gh.GetPullRequest(num)`
    2. **Detect fork PRs (fail fast)** → return specific error if fork (see below)
-   3. Generate local branch name via template
-   4. **Check if worktree already exists using Matcher** (fetch all worktrees, use `FindWorktreeForPR`)
+   3. **Warn if PR is merged/closed** → print to stderr: `"Note: PR #%d is %s"` but continue
+   4. Generate local branch name via template
+   5. **Check if worktree already exists using Matcher** (fetch all worktrees, use `FindWorktreeForPR`)
       - If exists → output path to stdout, print "Worktree already exists" to stderr, return
-   5. **Check for path collision**: If generated worktree path already exists on disk but wasn't matched
-      by the Matcher, return error: `"worktree path %s already exists for a different branch"`
-   6. Fetch remote branch: `git.FetchRemoteBranch("origin", pr.BranchName, localBranch)`
-   7. Create worktree: `git.CreateWorktreeForExistingBranch(localBranch, wtPath)`
-   8. Output absolute path to stdout
+   6. **Check for path collision**: Generate expected worktree path, then `os.Stat()` to check if it exists.
+      If path exists but Matcher didn't find a matching worktree, return error:
+      `"worktree path %s already exists (not a PR worktree or different branch)"`
+   7. **Check if local branch already exists** (retry-friendly): `git.BranchExists(localBranch, false)`
+      - If exists → skip fetch, proceed to step 9
+   8. Fetch remote branch: `git.FetchRemoteBranch("origin", pr.BranchName, localBranch)`
+   9. Create worktree: `git.CreateWorktreeForExistingBranch(localBranch, wtPath)`
+   10. Output absolute path to stdout
 
    **Note**: `FetchRemoteBranch` and `CreateWorktreeForExistingBranch` already exist in `internal/git/git.go`.
 
-   **Fork detection** (using HeadRepoOwner and BaseRepoOwner fields):
+   **Fork detection** (using IsCrossRepository field):
    ```go
    // Detect fork PRs immediately after fetching PR info (fail fast)
-   if pr.HeadRepoOwner != pr.BaseRepoOwner {
-       return fmt.Errorf("PR #%d is from a fork (%s), which is not yet supported", pr.Number, pr.HeadRepoOwner)
+   if pr.IsCrossRepository {
+       return fmt.Errorf("PR #%d is from a fork, which is not yet supported.\nTip: You can manually add the fork as a remote and create a worktree with 'git worktree add'", pr.Number)
    }
    ```
 
-   **Note**: Requires adding `BaseRepoOwner` and `HeadRepoOwner` fields to `PullRequest` struct.
-   Fetch from GitHub API fields `baseRepository.owner.login` and `headRepositoryOwner.login`.
+   **Note**: Requires adding `IsCrossRepository` field to `PullRequest` struct.
+   Maps directly to GitHub API field `isCrossRepository` (boolean).
 
 **Tests:** `cmd/pr_list_test.go`, `cmd/pr_preview_test.go`, `cmd/pr_create_test.go`
 
@@ -351,19 +392,23 @@ Pattern (bash/zsh) - follows existing `grs` script conventions:
 #   --with-nth 3   → show column 3 (pretty display)
 #   {1}            → PR number for pr create and preview
 #   cut -f1        → extract PR number after selection
-#   --preview-window 'right:50%:wrap' with debounce via fzf default
 grp() {
     local pr_num
     pr_num=$(grove pr list --fzf | fzf \
         --delimiter '\t' \
         --with-nth 3 \
-        --preview 'grove pr preview {1}' \
-        --preview-window 'right:50%:wrap' \
+        --preview 'grove pr preview --fzf {1}' \
+        --preview-window 'right:50%:wrap:delay:300' \
         | cut -f1)
     if [ -n "$pr_num" ]; then
+        # Validate PR number is numeric (defensive check)
+        if ! [[ "$pr_num" =~ ^[0-9]+$ ]]; then
+            echo "Invalid PR number: $pr_num" >&2
+            return 1
+        fi
         local output
-        # Use 2>&1 to capture both stdout and stderr for error display
-        if output=$(grove pr create "$pr_num" 2>&1); then
+        # Don't redirect stderr - let info/error messages display to terminal (matches grs pattern)
+        if output=$(grove pr create "$pr_num"); then
             # Prefer zoxide (z) when available (same pattern as grs)
             if command -v z &> /dev/null; then
                 z "$output"
@@ -371,7 +416,7 @@ grp() {
                 cd "$output"
             fi
         else
-            echo "$output"; return 1
+            return 1
         fi
     fi
 }
@@ -382,6 +427,27 @@ Fish script follows existing `grs.fish` patterns (uses `set -l`, `test`, `functi
 **File to modify:** `internal/shell/functions.go`
 - Add `//go:embed` directives for grp scripts
 - Update `GenerateFish()`, `GenerateZsh()`, `GenerateBash()` to include grp
+
+---
+
+### Phase 6: grove list Enhancement
+
+**File to modify:** `cmd/list.go`
+
+Add `[PR]` marker to distinguish PR worktrees in `grove list` output:
+- Check if worktree directory name starts with `pr.worktree_prefix` (default: `pr-`)
+- Display `[PR]` tag before the worktree name in both table and fzf output
+- Example: `[PR] pr-feature-auth` vs `wt-main`
+
+```go
+// In list display logic
+func formatWorktreeName(name string, prPrefix string) string {
+    if strings.HasPrefix(name, prPrefix) {
+        return "[PR] " + name
+    }
+    return name
+}
+```
 
 ---
 
@@ -448,17 +514,18 @@ Step 4: Join → /Users/me/code/myrepo/pr-123
 
 | File | Action |
 |------|--------|
-| `internal/config/config.go` | Add PRConfig struct, add `isValidBranchName()` |
+| `internal/config/config.go` | Add PRConfig struct |
 | `internal/config/defaults.go` | Add PR defaults to `DefaultConfig()` |
-| `internal/naming/pr.go` | NEW: PR naming logic |
+| `internal/naming/pr.go` | NEW: PR naming logic, `isValidBranchName()` |
 | `internal/pr/matcher.go` | NEW: PR-worktree matcher |
-| `internal/github/github.go` | Add `GetPullRequestFiles(num)` to interface |
-| `internal/github/github_cli.go` | Implement `GetPullRequestFiles` using `gh api`; add gh CLI detection with specific error messages |
-| `internal/github/pull_request.go` | Add `BaseRepoOwner`, `HeadRepoOwner` fields; update `prJsonFields` to include `baseRepository,headRepositoryOwner` |
+| `internal/github/github.go` | Add `GetPullRequestFiles(num)` and `Validate()` to interface |
+| `internal/github/github_cli.go` | Implement `GetPullRequestFiles` (follows existing pattern); implement `Validate()` for gh CLI detection |
+| `internal/github/pull_request.go` | Add `IsCrossRepository` field; update `prJsonFields` to include `isCrossRepository` |
 | `cmd/pr.go` | NEW: Parent command |
 | `cmd/pr_list.go` | NEW: List command |
 | `cmd/pr_preview.go` | NEW: Preview command |
 | `cmd/pr_create.go` | NEW: Create command |
+| `cmd/list.go` | Add `[PR]` marker for worktrees matching `pr.worktree_prefix` |
 | `internal/shell/scripts/grp.{bash,zsh,fish}` | NEW: Shell functions |
 | `internal/shell/functions.go` | Add grp embeds |
 
@@ -493,13 +560,14 @@ Step 4: Join → /Users/me/code/myrepo/pr-123
 6. `pr preview` command
 7. `pr create` command
 8. Shell scripts (`grp`)
-9. Run `make check` to validate
+9. `grove list` enhancement ([PR] marker)
+10. Run `make check` to validate
 
 ---
 
 ## Known Limitations (v1)
 
-1. **Fork PRs not supported**: Only works with PRs from the same repository. PRs from forks require fetching from the forker's remote, which is not implemented. Fork PRs are detected via `HeadRepoOwner` field and a specific error message is shown.
+1. **Fork PRs not supported**: Only works with PRs from the same repository. PRs from forks require fetching from the forker's remote, which is not implemented. Fork PRs are detected via `IsCrossRepository` field and a specific error message is shown.
 
 2. **Config changes may break matching**: If you change `branch_template` after creating PR worktrees, previously created worktrees may not be detected as "Local" in `pr list`. The matcher regenerates expected branch names using the current config.
 
@@ -507,7 +575,7 @@ Step 4: Join → /Users/me/code/myrepo/pr-123
 
 4. **No JSON output**: `--json` flag for scriptability is deferred.
 
-5. **No rate limiting protection**: Preview API calls are made on each fzf cursor movement. Shell scripts use fzf's default debounce, but rapid scrolling may still trigger many requests. Additional caching deferred to v2 if users report issues.
+5. **No rate limiting protection**: Preview API calls are made on each fzf cursor movement. Shell scripts use fzf's `delay:300` option to debounce, but rapid scrolling may still trigger many requests. Additional caching deferred to v2 if users report issues. **Note**: `delay:300` requires fzf 0.32+; older versions may make more preview API calls.
 
 6. **Preview parallelization deferred**: Two sequential API calls in preview (~400-1000ms) could be parallelized in v2 if latency becomes a concern.
 
@@ -515,11 +583,17 @@ Step 4: Join → /Users/me/code/myrepo/pr-123
 
 8. **FZF search is fuzzy across all fields**: The searchable column concatenates number, title, branch, author, and state with spaces. Searching "jsmith" will match PRs with "jsmith" in the title as well as PRs authored by jsmith. This is acceptable for fuzzy search UX.
 
-9. **Matcher may have false positives**: The dual-match strategy checks both template-generated names and PR remote branch names. If a user has a local branch that happens to match a PR's remote branch name, the matcher will associate them. This is rare in practice.
+9. **Dual-match may return non-template worktrees**: The matcher checks both template-generated names AND PR remote branch names. This means `grove pr create` may return an existing worktree that uses a different branch name than your template would generate. For example, with template `pr/{{.Number}}`, if you manually created a worktree for branch `feature/add-auth`, running `grove pr create 123` (where PR #123 has that branch) returns the existing worktree rather than creating `pr-123`. This is intentional to avoid duplicate worktrees.
 
-10. **Preview file list limited to 30 files**: GitHub API returns max 30 files per page. We accept this limit and don't implement pagination. The "(and N more files...)" indicator shows the actual count from PR metadata.
+10. **Preview file list limited to 30 files**: GitHub API returns max 30 files per page. We accept this limit and don't implement pagination. The header shows actual count via `pr.FilesChanged`, and "(and N more files...)" appears when truncated.
 
 11. **Shell script UX improvements deferred**: Scripts don't check for fzf installation or provide helpful error messages. TODO for future version to improve shell function consistency and UX.
+
+12. **Template validation uses test data**: Branch template is validated at config load with synthetic test data (`BranchName: "test/branch", Number: 1`). If a real PR has a branch name that produces an invalid git branch (e.g., contains `..`), the error occurs at create-time, not config-time.
+
+13. **No PR cleanup command**: There's no `grove pr clean` to remove worktrees for merged/closed PRs. Users should manually remove PR worktrees using `git worktree remove`. A dedicated cleanup command is deferred to v2.
+
+14. **grove list mixes PR and regular worktrees**: `grove list` shows all worktrees together, but PR worktrees are visually distinguished with a `[PR]` marker based on the configured `pr.worktree_prefix`.
 
 ---
 
@@ -550,8 +624,7 @@ func (n *PRWorktreeNamer) GenerateWorktreeName(branchName string) string {
     }
 
     // Smart detection: skip prefix if slug already starts with it
-    // Guard: empty prefix check prevents strings.HasPrefix("anything", "") always returning true
-    if n.worktreePrefix != "" && strings.HasPrefix(slug, n.worktreePrefix) {
+    if strings.HasPrefix(slug, n.worktreePrefix) {
         return slug
     }
 
@@ -573,8 +646,6 @@ func (n *PRWorktreeNamer) GenerateWorktreeName(branchName string) string {
    - Such branch names are rare in practice
    - If a branch is already named `pr-*`, the user likely doesn't want `pr-pr-*`
    - The behavior is consistent and predictable once understood
-
-2. **Empty worktree_prefix**: The guard clause `if n.worktreePrefix != ""` ensures that an empty prefix doesn't cause `strings.HasPrefix("anything", "")` to always return true. If prefix is empty, no prefix is added (as expected).
 
 ### Updated Transformation Flow
 
