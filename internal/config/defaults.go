@@ -11,6 +11,10 @@ func DefaultConfig() Config {
 		Git: GitConfig{
 			Timeout: 5 * time.Second,
 		},
+		PR: PRConfig{
+			BranchTemplate: "{{.BranchName}}",
+			WorktreePrefix: "pr-",
+		},
 		Slugify: SlugifyConfig{
 			CollapseDashes:     true,
 			HashLength:         4,
