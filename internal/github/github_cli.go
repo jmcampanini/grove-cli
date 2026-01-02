@@ -108,6 +108,41 @@ func (g *GitHubCli) GetPullRequestByBranch(branchName string) (*PullRequest, err
 	return &prs[0], nil
 }
 
+func (g *GitHubCli) GetPullRequestFiles(prNum int) ([]PullRequestFile, error) {
+	args := []string{
+		"pr", "view", fmt.Sprintf("%d", prNum),
+		"--json", "files",
+	}
+
+	output, err := g.executeGhCommand(args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get files for pull request #%d: %w", prNum, err)
+	}
+
+	// gh returns: {"files": [{"path": "...", "additions": N, "deletions": N}, ...]}
+	var result struct {
+		Files []struct {
+			Additions int    `json:"additions"`
+			Deletions int    `json:"deletions"`
+			Path      string `json:"path"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse files for pull request #%d: %w", prNum, err)
+	}
+
+	files := make([]PullRequestFile, len(result.Files))
+	for i, f := range result.Files {
+		files[i] = PullRequestFile{
+			Additions: f.Additions,
+			Deletions: f.Deletions,
+			Path:      f.Path,
+		}
+	}
+
+	return files, nil
+}
+
 func (g *GitHubCli) ListPullRequests(query PRQuery, limit int) ([]PullRequest, error) {
 	searchQuery := query.ToSearchQuery()
 
@@ -129,4 +164,18 @@ func (g *GitHubCli) ListPullRequests(query PRQuery, limit int) ([]PullRequest, e
 	}
 
 	return prs, nil
+}
+
+func (g *GitHubCli) Validate() error {
+	// Check if gh is installed
+	if _, err := exec.LookPath("gh"); err != nil {
+		return fmt.Errorf("gh CLI not found: install from https://cli.github.com")
+	}
+
+	// Check auth status - gh auth status exits non-zero if not authenticated
+	if _, err := g.executeGhCommand("auth", "status"); err != nil {
+		return fmt.Errorf("gh CLI not authenticated: run 'gh auth login'")
+	}
+
+	return nil
 }
