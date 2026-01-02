@@ -43,7 +43,7 @@ func (g *GitHubCli) executeGhCommand(args ...string) (string, error) {
 
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	cmd.Dir = g.workingDir
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), "GH_PROMPT_DISABLED=1")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

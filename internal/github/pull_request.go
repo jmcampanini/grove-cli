@@ -91,7 +91,6 @@ type PullRequest struct {
 	URL          string
 }
 
-//nolint:unused // will be used by gh CLI implementation
 const prJsonFields = "additions,author,body,changedFiles,createdAt,deletions,headRefName,isDraft,number,state,title,updatedAt,url"
 
 func (pr *PullRequest) UnmarshalJSON(data []byte) error {
