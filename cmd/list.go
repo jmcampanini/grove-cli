@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/jmcampanini/grove-cli/internal/config"
 	"github.com/jmcampanini/grove-cli/internal/git"
@@ -96,13 +97,15 @@ func runList(cmd *cobra.Command, _ []string) error {
 		return others[i].AbsolutePath < others[j].AbsolutePath
 	})
 
+	prPrefix := cfg.PR.WorktreePrefix
+
 	if mainWT != nil {
-		if err := outputWorktree(cmd, *mainWT, namer, fzfFlag); err != nil {
+		if err := outputWorktree(cmd, *mainWT, namer, prPrefix, fzfFlag); err != nil {
 			return err
 		}
 	}
 	for _, wt := range others {
-		if err := outputWorktree(cmd, wt, namer, fzfFlag); err != nil {
+		if err := outputWorktree(cmd, wt, namer, prPrefix, fzfFlag); err != nil {
 			return err
 		}
 	}
@@ -110,9 +113,9 @@ func runList(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func outputWorktree(cmd *cobra.Command, wt git.Worktree, namer *naming.WorktreeNamer, fzf bool) error {
+func outputWorktree(cmd *cobra.Command, wt git.Worktree, namer *naming.WorktreeNamer, prPrefix string, fzf bool) error {
 	if fzf {
-		path, display := formatWorktree(wt, namer)
+		path, display := formatWorktree(wt, namer, prPrefix)
 		_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", path, display)
 		return err
 	}
@@ -120,8 +123,9 @@ func outputWorktree(cmd *cobra.Command, wt git.Worktree, namer *naming.WorktreeN
 	return err
 }
 
-func formatWorktree(wt git.Worktree, namer *naming.WorktreeNamer) (path, display string) {
+func formatWorktree(wt git.Worktree, namer *naming.WorktreeNamer, prPrefix string) (path, display string) {
 	name := getDisplayName(namer, wt.AbsolutePath)
+	name = formatWorktreeName(name, filepath.Base(wt.AbsolutePath), prPrefix)
 
 	switch wt.Ref.Type() {
 	case git.WorktreeRefTypeBranch:
@@ -164,4 +168,13 @@ func shortSHASafe(sha string, maxLen int) string {
 		return sha
 	}
 	return sha[:maxLen]
+}
+
+// formatWorktreeName adds a [PR] marker to the display name if the worktree
+// directory name starts with the PR prefix.
+func formatWorktreeName(displayName, dirName, prPrefix string) string {
+	if prPrefix != "" && strings.HasPrefix(dirName, prPrefix) {
+		return "[PR] " + displayName
+	}
+	return displayName
 }

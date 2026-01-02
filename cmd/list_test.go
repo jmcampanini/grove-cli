@@ -125,10 +125,11 @@ func TestFormatWorktree(t *testing.T) {
 
 	tests := []struct {
 		name        string
+		prPrefix    string
+		wantDisplay string
+		wantPath    string
 		worktree    git.Worktree
 		wtPrefix    string
-		wantPath    string
-		wantDisplay string
 	}{
 		{
 			name: "local branch with prefix stripped",
@@ -144,6 +145,7 @@ func TestFormatWorktree(t *testing.T) {
 				),
 			},
 			wtPrefix:    "wt-",
+			prPrefix:    "pr-",
 			wantPath:    "/ws/wt-add-auth",
 			wantDisplay: "local branch add-auth feature/add-auth",
 		},
@@ -161,6 +163,7 @@ func TestFormatWorktree(t *testing.T) {
 				),
 			},
 			wtPrefix:    "wt-",
+			prPrefix:    "pr-",
 			wantPath:    "/ws/main",
 			wantDisplay: "local branch [main] main",
 		},
@@ -178,6 +181,7 @@ func TestFormatWorktree(t *testing.T) {
 				),
 			},
 			wtPrefix:    "wt-",
+			prPrefix:    "pr-",
 			wantPath:    "/ws/wt-v1",
 			wantDisplay: "tag v1 v1.0.0",
 		},
@@ -188,6 +192,7 @@ func TestFormatWorktree(t *testing.T) {
 				Ref:          git.NewCommit("abc1234def5678", "Hotfix", now, "user"),
 			},
 			wtPrefix:    "wt-",
+			prPrefix:    "pr-",
 			wantPath:    "/ws/wt-hotfix",
 			wantDisplay: "detached hotfix abc1234",
 		},
@@ -198,6 +203,7 @@ func TestFormatWorktree(t *testing.T) {
 				Ref:          git.NewCommit("abc", "Short SHA", now, "user"),
 			},
 			wtPrefix:    "wt-",
+			prPrefix:    "pr-",
 			wantPath:    "/ws/wt-short",
 			wantDisplay: "detached short abc",
 		},
@@ -208,15 +214,34 @@ func TestFormatWorktree(t *testing.T) {
 				Ref:          git.NewCommit("", "No SHA", now, "user"),
 			},
 			wtPrefix:    "wt-",
+			prPrefix:    "pr-",
 			wantPath:    "/ws/wt-empty",
 			wantDisplay: "detached empty (no sha)",
+		},
+		{
+			name: "PR worktree shows [PR] marker",
+			worktree: git.Worktree{
+				AbsolutePath: "/ws/pr-feature-auth",
+				Ref: git.NewLocalBranch(
+					"feature/auth",
+					"origin/feature/auth",
+					"/ws/pr-feature-auth",
+					true,
+					0, 0,
+					git.NewCommit("abc1234def5678", "Add auth", now, "user"),
+				),
+			},
+			wtPrefix:    "wt-",
+			prPrefix:    "pr-",
+			wantPath:    "/ws/pr-feature-auth",
+			wantDisplay: "local branch [PR] [pr-feature-auth] feature/auth",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			namer := testNamer(tt.wtPrefix)
-			gotPath, gotDisplay := formatWorktree(tt.worktree, namer)
+			gotPath, gotDisplay := formatWorktree(tt.worktree, namer, tt.prPrefix)
 			assert.Equal(t, tt.wantPath, gotPath)
 			assert.Equal(t, tt.wantDisplay, gotDisplay)
 		})
@@ -239,7 +264,7 @@ func TestFormatWorktreeTabSeparation(t *testing.T) {
 	}
 
 	namer := testNamer("wt-")
-	_, display := formatWorktree(worktree, namer)
+	_, display := formatWorktree(worktree, namer, "pr-")
 
 	// Verify no tabs in display string
 	assert.NotContains(t, display, "\t", "display string should not contain tabs")
@@ -249,4 +274,57 @@ func TestFormatWorktreeTabSeparation(t *testing.T) {
 
 	// Verify proper spacing (single spaces between parts)
 	assert.NotContains(t, display, "  ", "display string should not have double spaces")
+}
+
+func TestFormatWorktreeName(t *testing.T) {
+	tests := []struct {
+		dirName     string
+		displayName string
+		name        string
+		prPrefix    string
+		want        string
+	}{
+		{
+			name:        "PR worktree gets marker",
+			displayName: "feature-auth",
+			dirName:     "pr-feature-auth",
+			prPrefix:    "pr-",
+			want:        "[PR] feature-auth",
+		},
+		{
+			name:        "regular worktree no marker",
+			displayName: "feature-auth",
+			dirName:     "wt-feature-auth",
+			prPrefix:    "pr-",
+			want:        "feature-auth",
+		},
+		{
+			name:        "main worktree no marker",
+			displayName: "[main]",
+			dirName:     "main",
+			prPrefix:    "pr-",
+			want:        "[main]",
+		},
+		{
+			name:        "custom PR prefix",
+			displayName: "bug-fix",
+			dirName:     "review-bug-fix",
+			prPrefix:    "review-",
+			want:        "[PR] bug-fix",
+		},
+		{
+			name:        "empty prefix never matches",
+			displayName: "feature",
+			dirName:     "feature",
+			prPrefix:    "",
+			want:        "feature",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatWorktreeName(tt.displayName, tt.dirName, tt.prPrefix)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
