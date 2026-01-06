@@ -76,38 +76,47 @@ func (q PRQuery) ToSearchQuery() string {
 }
 
 type PullRequest struct {
-	AuthorLogin  string // May be empty if author's account was deleted
-	AuthorName   string // May be empty if author's account was deleted
-	Body         string
-	BranchName   string
-	CreatedAt    time.Time
-	FilesChanged int
-	LinesAdded   int
-	LinesDeleted int
-	Number       int
-	State        PRState
-	Title        string
-	UpdatedAt    time.Time
-	URL          string
+	AuthorLogin       string // May be empty if author's account was deleted
+	AuthorName        string // May be empty if author's account was deleted
+	Body              string
+	BranchName        string
+	CreatedAt         time.Time
+	FilesChanged      int
+	IsCrossRepository bool // True if PR is from a fork
+	LinesAdded        int
+	LinesDeleted      int
+	Number            int
+	State             PRState
+	Title             string
+	UpdatedAt         time.Time
+	URL               string
 }
 
-const prJsonFields = "additions,author,body,changedFiles,createdAt,deletions,headRefName,isDraft,number,state,title,updatedAt,url"
+// PullRequestFile represents a file changed in a pull request.
+type PullRequestFile struct {
+	Additions int
+	Deletions int
+	Path      string
+}
+
+const prJsonFields = "additions,author,body,changedFiles,createdAt,deletions,headRefName,isCrossRepository,isDraft,number,state,title,updatedAt,url"
 
 func (pr *PullRequest) UnmarshalJSON(data []byte) error {
 	type rawPR struct {
-		Additions    int       `json:"additions"`
-		Body         string    `json:"body"`
-		ChangedFiles int       `json:"changedFiles"`
-		CreatedAt    time.Time `json:"createdAt"`
-		Deletions    int       `json:"deletions"`
-		HeadRefName  string    `json:"headRefName"`
-		IsDraft      bool      `json:"isDraft"`
-		Number       int       `json:"number"`
-		State        string    `json:"state"`
-		Title        string    `json:"title"`
-		UpdatedAt    time.Time `json:"updatedAt"`
-		URL          string    `json:"url"`
-		Author       struct {
+		Additions         int       `json:"additions"`
+		Body              string    `json:"body"`
+		ChangedFiles      int       `json:"changedFiles"`
+		CreatedAt         time.Time `json:"createdAt"`
+		Deletions         int       `json:"deletions"`
+		HeadRefName       string    `json:"headRefName"`
+		IsCrossRepository bool      `json:"isCrossRepository"`
+		IsDraft           bool      `json:"isDraft"`
+		Number            int       `json:"number"`
+		State             string    `json:"state"`
+		Title             string    `json:"title"`
+		UpdatedAt         time.Time `json:"updatedAt"`
+		URL               string    `json:"url"`
+		Author            struct {
 			Login string `json:"login"`
 			Name  string `json:"name"`
 		} `json:"author"`
@@ -123,6 +132,7 @@ func (pr *PullRequest) UnmarshalJSON(data []byte) error {
 	pr.BranchName = raw.HeadRefName
 	pr.CreatedAt = raw.CreatedAt
 	pr.FilesChanged = raw.ChangedFiles
+	pr.IsCrossRepository = raw.IsCrossRepository
 	pr.LinesAdded = raw.Additions
 	pr.LinesDeleted = raw.Deletions
 	pr.Number = raw.Number

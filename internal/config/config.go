@@ -9,6 +9,7 @@ import (
 type Config struct {
 	Branch   BranchConfig   `toml:"branch"`
 	Git      GitConfig      `toml:"git"`
+	PR       PRConfig       `toml:"pr"`
 	Slugify  SlugifyConfig  `toml:"slugify"`
 	Worktree WorktreeConfig `toml:"worktree"`
 }
@@ -18,6 +19,9 @@ type Config struct {
 func (c Config) Validate() error {
 	if c.Git.Timeout < 0 {
 		return errors.New("git.timeout cannot be negative")
+	}
+	if c.PR.WorktreePrefix == "" {
+		return errors.New("pr.worktree_prefix cannot be empty")
 	}
 	if c.Slugify.HashLength < 0 {
 		return errors.New("slugify.hash_length cannot be negative")
@@ -39,6 +43,12 @@ type BranchConfig struct {
 // GitConfig configures git command execution.
 type GitConfig struct {
 	Timeout time.Duration `toml:"timeout"` // Timeout for git commands (e.g., "5s")
+}
+
+// PRConfig configures pull request worktree naming.
+type PRConfig struct {
+	BranchTemplate string `toml:"branch_template"` // Template for local branch name (e.g., "{{.BranchName}}")
+	WorktreePrefix string `toml:"worktree_prefix"` // Prefix for PR worktree directories (e.g., "pr-")
 }
 
 // SlugifyConfig configures slug generation.
