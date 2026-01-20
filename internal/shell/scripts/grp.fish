@@ -1,0 +1,31 @@
+# FZF column layout: <number>\t<searchable>\t<display>
+#   --with-nth 3   → show column 3 (pretty display)
+#   {1}            → PR number for pr create and preview
+#   cut -f1        → extract PR number after selection
+function grp -d "Create or switch to a PR worktree using fzf"
+    set -l pr_num (grove pr list --fzf | fzf \
+        --delimiter '\t' \
+        --with-nth 3 \
+        --preview 'grove pr preview --fzf {1}' \
+        --preview-window 'right:50%:wrap:delay:300' \
+        | cut -f1)
+    if test -n "$pr_num"
+        # Validate PR number is numeric (defensive check)
+        if not string match -qr '^[0-9]+$' "$pr_num"
+            echo "Invalid PR number: $pr_num" >&2
+            return 1
+        end
+        # Don't redirect stderr - let info/error messages display to terminal (matches grs pattern)
+        set -l output (grove pr create "$pr_num")
+        if test $status -eq 0
+            # Prefer zoxide (z) when available (same pattern as grs)
+            if type -q z
+                z "$output"
+            else
+                cd "$output"
+            end
+        else
+            return 1
+        end
+    end
+end

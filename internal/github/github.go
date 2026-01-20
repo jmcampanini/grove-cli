@@ -8,7 +8,19 @@ type GitHub interface {
 	// Returns nil if no pull request exists for the branch.
 	GetPullRequestByBranch(branchName string) (*PullRequest, error)
 
+	// GetPullRequestFiles returns the list of files changed in a pull request.
+	// Note: GitHub API returns max 30 files per page; pagination is not implemented.
+	GetPullRequestFiles(prNum int) ([]PullRequestFile, error)
+
 	// ListPullRequests returns a list of pull requests matching the given query.
 	// Use DefaultPRLimit for the limit parameter to get the standard number of results.
 	ListPullRequests(query PRQuery, limit int) ([]PullRequest, error)
+
+	// Validate checks if gh CLI is available and authenticated.
+	// Returns nil if ready to use, or a descriptive error:
+	// - "gh CLI not found: install from https://cli.github.com"
+	// - "gh CLI not authenticated: run 'gh auth login'"
+	// Note: Does not check if current directory is a GitHub repo.
+	// Non-GitHub repos will fail naturally when gh commands are executed.
+	Validate() error
 }
